@@ -70,6 +70,7 @@ QPushButton:pressed {
 QPushButton#dangerBtn {
     background: qlineargradient(x1:0,y1:0,x2:1,y2:0,
         stop:0 #d96b6b, stop:1 #e88a8a);
+    color: #888;
 }
 QPushButton#dangerBtn:hover {
     background: #c55050;
@@ -389,7 +390,7 @@ class LoginWindow(QMainWindow):
         self.login_btn.setStyleSheet('''
             QPushButton {
                 min-height: 24px; font-size: 15px; font-weight: bold;
-                border-radius: 10px;
+                border-radius: 10px; color: #888;
             }
         ''')
         self.login_btn.clicked.connect(self.login)
@@ -565,6 +566,7 @@ class MainWindow(QMainWindow):
         # 按钮
         btn_row1 = QHBoxLayout()
         self.add_btn = QPushButton('✚ 新增')
+        self.add_btn.setObjectName('secondaryBtn')
         self.update_btn = QPushButton('✎ 修改')
         self.update_btn.setObjectName('secondaryBtn')
         btn_row1.addWidget(self.add_btn)

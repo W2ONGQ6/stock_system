@@ -41,10 +41,10 @@ jobs:
         pip install PyQt5 Pillow PyInstaller
     
     # 5. 生成应用图标（如果需要）
-    - name: Generate app icon
-      run: |
-        python gen_app_ico.py
-      continue-on-error: true
+    # - name: Generate app icon
+    #   run: |
+    #     python gen_app_ico.py
+    #   continue-on-error: true
     
     # 6. 使用 PyInstaller 打包
     - name: Build with PyInstaller
