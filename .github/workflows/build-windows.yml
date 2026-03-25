@@ -1,0 +1,95 @@
+name: Build Windows EXE
+
+# 触发条件：push 或手动触发
+on:
+  push:
+    branches: [ main, master, develop ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:  # 允许手动触发
+
+jobs:
+  build:
+    name: Build on Windows
+    runs-on: windows-latest
+    
+    steps:
+    # 1. 获取代码
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    # 2. 设置 Python 环境
+    - name: Set up Python 3.11
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+        cache: 'pip'
+    
+    # 3. 升级 pip
+    - name: Upgrade pip
+      run: |
+        python -m pip install --upgrade pip setuptools wheel
+    
+    # 4. 安装依赖
+    - name: Install dependencies
+      run: |
+        pip install -r requirements.txt
+      continue-on-error: true
+    
+    - name: Install build tools
+      run: |
+        pip install PyQt5 Pillow PyInstaller
+    
+    # 5. 生成应用图标（如果需要）
+    - name: Generate app icon
+      run: |
+        python gen_app_ico.py
+      continue-on-error: true
+    
+    # 6. 使用 PyInstaller 打包
+    - name: Build with PyInstaller
+      run: |
+        pyinstaller 服装库存管理系统_windows.spec
+    
+    # 7. 创建分发包 (ZIP)
+    - name: Create distribution package
+      run: |
+        cd dist
+        Compress-Archive -Path 服装库存管理系统 -DestinationPath 服装库存管理系统-windows.zip
+        cd ..
+    
+    # 8. 上传 artifacts（用于下载）
+    - name: Upload build artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: 服装库存管理系统-windows-${{ github.run_number }}
+        path: dist/服装库存管理系统/
+        retention-days: 30
+    
+    # 9. 上传 ZIP 压缩包
+    - name: Upload ZIP artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: 服装库存管理系统-windows-zip
+        path: dist/服装库存管理系统-windows.zip
+    
+    # 10. 创建 Release（仅当创建 tag 时）
+    - name: Create GitHub Release
+      if: startsWith(github.ref, 'refs/tags/')
+      uses: softprops/action-gh-release@v1
+      with:
+        files: |
+          dist/服装库存管理系统/**/*
+          dist/服装库存管理系统-windows.zip
+        draft: false
+        prerelease: false
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    
+    # 11. 构建状态通知
+    - name: Build summary
+      if: success()
+      run: |
+        echo "✅ Build completed successfully!"
+        echo "📦 Artifacts available in Actions tab"
+        echo "📥 Download from: Artifacts section"

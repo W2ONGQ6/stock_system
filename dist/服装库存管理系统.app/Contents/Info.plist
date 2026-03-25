@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDisplayName</key>
+	<string>服装库存管理系统</string>
+	<key>CFBundleExecutable</key>
+	<string>服装库存管理系统</string>
+	<key>CFBundleIconFile</key>
+	<string>generated-2d2ea9f7fbf61c2ac33ab9a8fff128c9df36d7cbafced1ab6f691a09af13c654.icns</string>
+	<key>CFBundleIdentifier</key>
+	<string>服装库存管理系统</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>服装库存管理系统</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.0.0</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+</dict>
+</plist>

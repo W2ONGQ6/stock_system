@@ -1,0 +1,3 @@
+([('服装库存管理系统',
+   '/Users/W2ONGQ6/Documents/algorithm/stock_system/dist/服装库存管理系统',
+   'EXECUTABLE')],)
