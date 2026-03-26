@@ -1,10 +1,22 @@
 import sys
 import sqlite3
 import os
+import shutil
+import uuid
 from datetime import date
 from PyQt5.QtWidgets import *
 from PyQt5.QtCore import Qt, QSize, QDate
-from PyQt5.QtGui import QFont, QIcon, QColor, QPalette
+from PyQt5.QtGui import QFont, QIcon, QColor, QPalette, QPixmap
+
+
+class SortableTableItem(QTableWidgetItem):
+    """QTableWidgetItem 子类，支持数值/日期正确排序"""
+    def __lt__(self, other):
+        my = self.data(Qt.UserRole)
+        ot = other.data(Qt.UserRole)
+        if my is not None and ot is not None:
+            return my < ot
+        return super().__lt__(other)
 
 # ===================== 全局样式 =====================
 STYLE_SHEET = """
@@ -185,9 +197,13 @@ QHeaderView::section {
     color: #6b5b4e;
     font-weight: bold;
     font-size: 12px;
-    padding: 7px 8px;
+    padding: 7px 10px;
     border: none;
     border-bottom: 2px solid #e0d8d0;
+}
+QHeaderView::section:hover {
+    background: #f0e8e0;
+    color: #b08968;
 }
 
 /* ---- 选项卡 ---- */
@@ -237,8 +253,20 @@ QComboBox QAbstractItemView {
     background: #fff;
     border: 1px solid #d4ccc4;
     border-radius: 6px;
+    color: #333;
     selection-background-color: #f5ece3;
     selection-color: #333;
+    outline: none;
+    padding: 4px;
+}
+QComboBox QAbstractItemView::item {
+    min-height: 28px;
+    padding: 4px 8px;
+    color: #333;
+}
+QComboBox QAbstractItemView::item:hover {
+    background: #f5ece3;
+    color: #3a3a3a;
 }
 
 /* ---- 分组框 ---- */
@@ -355,6 +383,8 @@ class Database:
                 remark TEXT DEFAULT '',
                 created_at TEXT DEFAULT (datetime('now','localtime')),
                 return_date TEXT DEFAULT '',
+                size TEXT DEFAULT '',
+                image_path TEXT DEFAULT '',
                 FOREIGN KEY (clothing_id) REFERENCES clothing(id)
             )
         ''')
@@ -363,6 +393,16 @@ class Database:
             self.cursor.execute("SELECT return_date FROM stock_records LIMIT 1")
         except sqlite3.OperationalError:
             self.cursor.execute("ALTER TABLE stock_records ADD COLUMN return_date TEXT DEFAULT ''")
+        # 兼容旧数据库：如果 stock_records 表没有 size 列则添加
+        try:
+            self.cursor.execute("SELECT size FROM stock_records LIMIT 1")
+        except sqlite3.OperationalError:
+            self.cursor.execute("ALTER TABLE stock_records ADD COLUMN size TEXT DEFAULT ''")
+        # 兼容旧数据库：如果 stock_records 表没有 image_path 列则添加
+        try:
+            self.cursor.execute("SELECT image_path FROM stock_records LIMIT 1")
+        except sqlite3.OperationalError:
+            self.cursor.execute("ALTER TABLE stock_records ADD COLUMN image_path TEXT DEFAULT ''")
         # 默认管理员
         self.cursor.execute("SELECT * FROM users WHERE username='admin'")
         if not self.cursor.fetchone():
@@ -399,9 +439,22 @@ class Database:
         self.cursor.execute(query, (pattern, pattern, pattern, pattern, pattern))
         return self.cursor.fetchall()
 
-    def find_clothing_by_code(self, code):
-        self.cursor.execute("SELECT id, name, stock FROM clothing WHERE code=?", (code,))
+    def find_clothing_by_code(self, code, size=None):
+        if size:
+            self.cursor.execute("SELECT id, name, stock FROM clothing WHERE code=? AND size=?", (code, size))
+        else:
+            self.cursor.execute("SELECT id, name, stock FROM clothing WHERE code=?", (code,))
         return self.cursor.fetchone()
+
+    def find_sizes_by_code(self, code):
+        self.cursor.execute(
+            "SELECT size, stock FROM clothing WHERE code=? AND stock > 0 ORDER BY size", (code,))
+        return self.cursor.fetchall()
+
+    def get_cost_price(self, clothing_id):
+        self.cursor.execute("SELECT cost_price FROM clothing WHERE id=?", (clothing_id,))
+        row = self.cursor.fetchone()
+        return row[0] if row else 0
 
     def update_stock(self, id_, num):
         self.cursor.execute("SELECT stock FROM clothing WHERE id=?", (id_,))
@@ -418,23 +471,25 @@ class Database:
     # ---- 出入库记录 ----
     def add_stock_record(self, clothing_id, clothing_name, department, team_name,
                          host_operator, anchor_name, contact, record_date,
-                         quantity, direction, status, remark):
+                         quantity, direction, status, remark, size='', image_path=''):
         self.cursor.execute('''
             INSERT INTO stock_records
             (clothing_id, clothing_name, department, team_name, host_operator,
-             anchor_name, contact, record_date, quantity, direction, status, remark)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+             anchor_name, contact, record_date, quantity, direction, status, remark, size, image_path)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         ''', (clothing_id, clothing_name, department, team_name, host_operator,
-              anchor_name, contact, record_date, quantity, direction, status, remark))
+              anchor_name, contact, record_date, quantity, direction, status, remark, size, image_path))
         self.conn.commit()
         return self.cursor.lastrowid
 
     def get_all_stock_records(self):
         self.cursor.execute('''
-            SELECT sr.id, COALESCE(c.code,''), sr.clothing_name, sr.department, sr.team_name,
+            SELECT sr.id, COALESCE(c.code,''), sr.clothing_name, COALESCE(sr.size,''),
+                   sr.department, sr.team_name,
                    sr.host_operator, sr.anchor_name, sr.contact, sr.record_date,
-                   sr.quantity, sr.direction, sr.status, sr.compensate_amount, sr.remark,
-                   sr.created_at, COALESCE(sr.return_date,'')
+                   sr.quantity, sr.direction, sr.status,
+                   sr.created_at, COALESCE(sr.return_date,''),
+                   sr.remark, sr.compensate_amount, COALESCE(sr.image_path,'')
             FROM stock_records sr LEFT JOIN clothing c ON sr.clothing_id = c.id
             ORDER BY sr.id DESC
         ''')
@@ -443,15 +498,18 @@ class Database:
     def search_stock_records(self, keyword):
         pattern = f"%{keyword}%"
         self.cursor.execute('''
-            SELECT sr.id, COALESCE(c.code,''), sr.clothing_name, sr.department, sr.team_name,
+            SELECT sr.id, COALESCE(c.code,''), sr.clothing_name, COALESCE(sr.size,''),
+                   sr.department, sr.team_name,
                    sr.host_operator, sr.anchor_name, sr.contact, sr.record_date,
-                   sr.quantity, sr.direction, sr.status, sr.compensate_amount, sr.remark,
-                   sr.created_at, COALESCE(sr.return_date,'')
+                   sr.quantity, sr.direction, sr.status,
+                   sr.created_at, COALESCE(sr.return_date,''),
+                   sr.remark, sr.compensate_amount, COALESCE(sr.image_path,'')
             FROM stock_records sr LEFT JOIN clothing c ON sr.clothing_id = c.id
             WHERE sr.clothing_name LIKE ? OR c.code LIKE ? OR sr.department LIKE ? OR sr.team_name LIKE ?
                OR sr.host_operator LIKE ? OR sr.anchor_name LIKE ? OR sr.contact LIKE ? OR sr.remark LIKE ?
+               OR sr.size LIKE ?
             ORDER BY sr.id DESC
-        ''', (pattern, pattern, pattern, pattern, pattern, pattern, pattern, pattern))
+        ''', (pattern, pattern, pattern, pattern, pattern, pattern, pattern, pattern, pattern))
         return self.cursor.fetchall()
 
     def update_record_status(self, record_id, new_status, compensate_amount=0):
@@ -493,10 +551,10 @@ class Database:
                 INSERT INTO stock_records
                 (clothing_id, clothing_name, department, team_name, host_operator,
                  anchor_name, contact, record_date, quantity, direction, status, remark,
-                 created_at, return_date)
+                 created_at, return_date, size, image_path)
                 SELECT clothing_id, clothing_name, department, team_name, host_operator,
                        anchor_name, contact, record_date, ?, direction, '已归还', remark,
-                       created_at, ?
+                       created_at, ?, size, image_path
                 FROM stock_records WHERE id=?
             ''', (return_qty, now, record_id))
         self.conn.commit()
@@ -527,10 +585,10 @@ class Database:
                 INSERT INTO stock_records
                 (clothing_id, clothing_name, department, team_name, host_operator,
                  anchor_name, contact, record_date, quantity, direction, status,
-                 compensate_amount, remark, created_at, return_date)
+                 compensate_amount, remark, created_at, return_date, size, image_path)
                 SELECT clothing_id, clothing_name, department, team_name, host_operator,
                        anchor_name, contact, record_date, ?, direction, '已赔付',
-                       ?, remark, created_at, ?
+                       ?, remark, created_at, ?, size, image_path
                 FROM stock_records WHERE id=?
             ''', (comp_qty, comp_amount, now, record_id))
         self.conn.commit()
@@ -540,7 +598,8 @@ class Database:
         self.cursor.execute('''
             SELECT id, clothing_id, clothing_name, department, team_name,
                    host_operator, anchor_name, contact, record_date,
-                   quantity, direction, status, compensate_amount, remark
+                   quantity, direction, status, compensate_amount, remark,
+                   COALESCE(size,''), COALESCE(image_path,'')
             FROM stock_records WHERE id=?
         ''', (record_id,))
         return self.cursor.fetchone()
@@ -709,6 +768,16 @@ class MainWindow(QMainWindow):
         self.tab.addTab(self._create_clothing_tab(), '📦  商品管理')
         main_layout.addWidget(self.tab, 1)
 
+    def _update_sort_indicator(self, table, base_cols, sorted_col):
+        """更新表头显示排序箭头 ▲/▼"""
+        order = table.horizontalHeader().sortIndicatorOrder()
+        arrow = ' ▲' if order == Qt.AscendingOrder else ' ▼'
+        for i, name in enumerate(base_cols):
+            if i == sorted_col:
+                table.horizontalHeaderItem(i).setText(name + arrow)
+            else:
+                table.horizontalHeaderItem(i).setText(name)
+
     # ---------- 统计卡片 ----------
     def _make_stat_card(self, label_text, number, color):
         card = QWidget()
@@ -872,8 +941,13 @@ class MainWindow(QMainWindow):
         ''')
         self.clothing_table.horizontalHeader().setStretchLastSection(True)
         self.clothing_table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
+        self.clothing_table.horizontalHeader().setMinimumSectionSize(60)
+        self.clothing_table.resizeColumnsToContents()
         self.clothing_table.verticalHeader().setVisible(False)
         self.clothing_table.setSortingEnabled(True)
+        self.clothing_table.horizontalHeader().setSortIndicatorShown(False)
+        self.clothing_table.horizontalHeader().sectionClicked.connect(
+            lambda col: self._update_sort_indicator(self.clothing_table, self.COLUMNS, col))
         self.clothing_table.cellClicked.connect(self.select_clothing)
         right_panel.addWidget(self.clothing_table, 1)
 
@@ -882,10 +956,10 @@ class MainWindow(QMainWindow):
         return widget
 
     # ---------- 出入库标签 ----------
-    STOCK_RECORD_COLS = ['记录ID', '商品编号', '商品名称', '部门', '团名',
+    STOCK_RECORD_COLS = ['记录ID', '商品编号', '商品名称', '尺码', '部门', '团名',
                          '主持/运营', '主播艺名', '联系方式', '操作日期',
-                         '数量', '类型', '状态', '赔付金额(¥)', '备注',
-                         '借出时间', '归还时间']
+                         '数量', '类型', '状态', '借出时间', '归还时间',
+                         '备注', '赔付金额(¥)', '图片']
 
     def _create_stock_tab(self):
         widget = QWidget()
@@ -914,6 +988,30 @@ class MainWindow(QMainWindow):
 
         self.stock_id = QLineEdit()
         self.stock_id.setPlaceholderText('输入商品编号（如 BH001）')
+        self.stock_id.editingFinished.connect(self._on_stock_code_changed)
+        self.stock_size = QComboBox()
+        self.stock_size.setSizeAdjustPolicy(QComboBox.AdjustToContents)
+        self.stock_size.setMinimumWidth(120)
+        self.stock_size.view().setMinimumWidth(200)
+        self.stock_size.addItem('均码')
+        # 点击下拉框时先刷新尺码列表，避免 editingFinished 时序问题导致列表为空
+        _orig_showPopup = self.stock_size.showPopup
+        def _refreshed_showPopup():
+            prev_data = self.stock_size.currentData()
+            prev_text = self.stock_size.currentText()
+            self._on_stock_code_changed()
+            # 还原之前的选择
+            if prev_data:
+                for i in range(self.stock_size.count()):
+                    if self.stock_size.itemData(i) == prev_data:
+                        self.stock_size.setCurrentIndex(i)
+                        break
+            elif prev_text:
+                idx = self.stock_size.findText(prev_text)
+                if idx >= 0:
+                    self.stock_size.setCurrentIndex(idx)
+            _orig_showPopup()
+        self.stock_size.showPopup = _refreshed_showPopup
         self.stock_department = QLineEdit()
         self.stock_department.setPlaceholderText('输入部门')
         self.stock_team = QLineEdit()
@@ -933,7 +1031,34 @@ class MainWindow(QMainWindow):
         self.stock_remark = QLineEdit()
         self.stock_remark.setPlaceholderText('备注信息')
 
+        # 图片上传
+        self._stock_image_path = ''
+        img_btn_row = QHBoxLayout()
+        img_btn_row.setSpacing(6)
+        self.stock_img_btn = QPushButton('📷 选择图片')
+        self.stock_img_btn.setObjectName('secondaryBtn')
+        self.stock_img_btn.clicked.connect(self._select_stock_image)
+        self.stock_img_clear_btn = QPushButton('✕')
+        self.stock_img_clear_btn.setFixedWidth(30)
+        self.stock_img_clear_btn.setObjectName('secondaryBtn')
+        self.stock_img_clear_btn.clicked.connect(self._clear_stock_image)
+        img_btn_row.addWidget(self.stock_img_btn)
+        img_btn_row.addWidget(self.stock_img_clear_btn)
+        img_btn_widget = QWidget()
+        img_btn_widget.setLayout(img_btn_row)
+
+        self.stock_img_preview = QLabel()
+        self.stock_img_preview.setFixedSize(280, 180)
+        self.stock_img_preview.setAlignment(Qt.AlignCenter)
+        self.stock_img_preview.setStyleSheet(
+            'QLabel { border: 1px dashed #c4a882; border-radius: 6px; '
+            'background: #faf7f4; color: #aaa; font-size: 12px; }')
+        self.stock_img_preview.setText('暂无图片')
+        self.stock_img_preview.setCursor(Qt.PointingHandCursor)
+        self.stock_img_preview.mousePressEvent = self._preview_stock_image
+
         form.addRow('编号：', self.stock_id)
+        form.addRow('尺码：', self.stock_size)
         form.addRow('部门：', self.stock_department)
         form.addRow('团名：', self.stock_team)
         form.addRow('主持/运营：', self.stock_host)
@@ -942,7 +1067,10 @@ class MainWindow(QMainWindow):
         form.addRow('操作日期：', self.stock_date)
         form.addRow('数量：', self.stock_num)
         form.addRow('备注：', self.stock_remark)
+        form.addRow('图片：', img_btn_widget)
         form_outer.addLayout(form)
+
+        form_outer.addWidget(self.stock_img_preview)
 
         form_outer.addSpacing(6)
 
@@ -1019,8 +1147,13 @@ class MainWindow(QMainWindow):
         self.stock_table.setStyleSheet('QTableWidget { alternate-background-color: #faf7f4; }')
         self.stock_table.horizontalHeader().setStretchLastSection(True)
         self.stock_table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
+        self.stock_table.horizontalHeader().setMinimumSectionSize(55)
+        self.stock_table.resizeColumnsToContents()
         self.stock_table.verticalHeader().setVisible(False)
         self.stock_table.setSortingEnabled(True)
+        self.stock_table.horizontalHeader().setSortIndicatorShown(False)
+        self.stock_table.horizontalHeader().sectionClicked.connect(
+            lambda col: self._update_sort_indicator(self.stock_table, self.STOCK_RECORD_COLS, col))
         self.stock_table.cellClicked.connect(self.select_stock_record)
         right_panel.addWidget(self.stock_table, 1)
 
@@ -1041,7 +1174,7 @@ class MainWindow(QMainWindow):
         numeric_cols = {0, 8, 9}
         for row, item in enumerate(data):
             for col, value in enumerate(item):
-                cell = QTableWidgetItem(str(value))
+                cell = SortableTableItem(str(value))
                 cell.setTextAlignment(Qt.AlignCenter)
                 if col in numeric_cols:
                     try:
@@ -1049,7 +1182,7 @@ class MainWindow(QMainWindow):
                     except (ValueError, TypeError):
                         cell.setData(Qt.UserRole, 0)
                 # 低库存高亮 (库存列索引=8)
-                if col == 8 and isinstance(value, int) and value <= 5:
+                if col == 8 and isinstance(value, int) and value <= 1:
                     cell.setForeground(QColor('#d96b6b'))
                     cell.setFont(QFont("", -1, QFont.Bold))
                 self.clothing_table.setItem(row, col, cell)
@@ -1088,18 +1221,46 @@ class MainWindow(QMainWindow):
         self.c_size.setCurrentIndex(0)
         self.c_season.setCurrentIndex(0)
 
-    def add_clothing(self):
+    def _validate_clothing_form(self):
+        """校验商品表单字段，返回 (ok, stock_val, cost_val)"""
         name = self.c_name.text().strip()
         if not name:
             QMessageBox.warning(self, '提示', '请输入服装名称')
+            return False, 0, 0
+        stock_text = self.c_stock.text().strip()
+        if stock_text:
+            try:
+                stock_val = int(stock_text)
+                if stock_val < 0:
+                    raise ValueError
+            except ValueError:
+                QMessageBox.warning(self, '提示', '库存数量必须为非负整数')
+                return False, 0, 0
+        else:
+            stock_val = 0
+        cost_text = self.c_cost.text().strip()
+        if cost_text:
+            try:
+                cost_val = float(cost_text)
+                if cost_val < 0:
+                    raise ValueError
+            except ValueError:
+                QMessageBox.warning(self, '提示', '进价必须为非负数字')
+                return False, 0, 0
+        else:
+            cost_val = 0
+        return True, stock_val, cost_val
+
+    def add_clothing(self):
+        ok, stock_val, cost_val = self._validate_clothing_form()
+        if not ok:
             return
         self.db.add_clothing(
             self.c_code.text().strip(),
-            name, self.c_category.currentText(), self.c_brand.text().strip(),
+            self.c_name.text().strip(), self.c_category.currentText(),
+            self.c_brand.text().strip(),
             self.c_size.currentText(), self.c_color.text().strip(),
-            self.c_season.currentText(),
-            int(self.c_stock.text() or 0),
-            float(self.c_cost.text() or 0))
+            self.c_season.currentText(), stock_val, cost_val)
         self.load_clothing()
         self.clear_form()
         QMessageBox.information(self, '成功', '服装商品已添加！')
@@ -1108,14 +1269,16 @@ class MainWindow(QMainWindow):
         if not self.c_id.text():
             QMessageBox.warning(self, '提示', '请先选择要修改的商品')
             return
+        ok, stock_val, cost_val = self._validate_clothing_form()
+        if not ok:
+            return
         self.db.update_clothing(
             int(self.c_id.text()),
             self.c_code.text().strip(),
             self.c_name.text().strip(), self.c_category.currentText(),
             self.c_brand.text().strip(), self.c_size.currentText(),
             self.c_color.text().strip(), self.c_season.currentText(),
-            int(self.c_stock.text() or 0),
-            float(self.c_cost.text() or 0))
+            stock_val, cost_val)
         self.load_clothing()
         QMessageBox.information(self, '成功', '商品信息已更新！')
 
@@ -1258,6 +1421,25 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, '导出失败', f'保存模板时出错：\n{e}')
 
+    def _on_stock_code_changed(self):
+        """当编号输入框失去焦点时，自动查询该编号对应的可借出尺码"""
+        code = self.stock_id.text().strip()
+        self.stock_size.clear()
+        if not code:
+            self.stock_size.addItem('均码')
+            return
+        size_rows = self.db.find_sizes_by_code(code)
+        if size_rows:
+            for size, stock in size_rows:
+                self.stock_size.addItem(f'{size}（库存{stock}）', size)
+        else:
+            self.stock_size.addItem('均码')
+        # 动态调整下拉列表宽度以完整显示内容
+        fm = self.stock_size.fontMetrics()
+        max_w = max(fm.horizontalAdvance(self.stock_size.itemText(i))
+                    for i in range(self.stock_size.count())) + 40
+        self.stock_size.view().setMinimumWidth(max(200, max_w))
+
     def operate_stock(self, direction):
         code_text = self.stock_id.text().strip()
         num_text = self.stock_num.text().strip()
@@ -1267,16 +1449,29 @@ class MainWindow(QMainWindow):
         try:
             quantity = abs(int(num_text))
         except ValueError:
-            QMessageBox.warning(self, '提示', '数量必须为数字')
+            QMessageBox.warning(self, '提示', '数量必须为正整数')
             return
         if quantity <= 0:
             QMessageBox.warning(self, '提示', '数量必须大于 0')
             return
 
-        # 按编号查找商品
-        result = self.db.find_clothing_by_code(code_text)
+        # 借出时校验借用人信息
+        if direction == -1:
+            anchor = self.stock_anchor.text().strip()
+            contact = self.stock_contact.text().strip()
+            if not anchor and not contact:
+                QMessageBox.warning(self, '提示', '借出操作请至少填写主播艺名或联系方式')
+                return
+            if contact and not all(c.isdigit() or c in '+-() ' for c in contact):
+                QMessageBox.warning(self, '提示', '联系方式格式不正确，请输入有效的电话号码')
+                return
+
+        # 按编号+尺码查找商品
+        size_data = self.stock_size.currentData()
+        size_text = size_data if size_data else self.stock_size.currentText().strip()
+        result = self.db.find_clothing_by_code(code_text, size_text)
         if result is None:
-            QMessageBox.warning(self, '提示', f'未找到编号为「{code_text}」的商品')
+            QMessageBox.warning(self, '提示', f'未找到编号为「{code_text}」尺码为「{size_text}」的商品')
             return
         clothing_id, clothing_name, current_stock = result
 
@@ -1289,6 +1484,9 @@ class MainWindow(QMainWindow):
         status = '入库' if direction > 0 else '借出'
         record_date = self.stock_date.date().toString('yyyy-MM-dd')
 
+        # 保存图片
+        saved_image = self._save_stock_image(self._stock_image_path)
+
         self.db.add_stock_record(
             clothing_id, clothing_name,
             self.stock_department.text().strip(),
@@ -1297,7 +1495,7 @@ class MainWindow(QMainWindow):
             self.stock_anchor.text().strip(),
             self.stock_contact.text().strip(),
             record_date, quantity, direction, status,
-            self.stock_remark.text().strip())
+            self.stock_remark.text().strip(), size_text, saved_image)
 
         self.load_clothing()
         self.load_stock_records()
@@ -1327,7 +1525,7 @@ class MainWindow(QMainWindow):
 
         return_qty, ok = QInputDialog.getInt(
             self, '归还数量',
-            f'商品：{record[2]}\n'
+            f'商品：{record[2]}（尺码：{record[14]}）\n'
             f'借出数量：{total_qty} 件\n'
             f'借用人：{record[6]}（{record[5]}）\n\n'
             f'请输入归还数量：',
@@ -1336,7 +1534,7 @@ class MainWindow(QMainWindow):
             return
 
         reply = QMessageBox.question(self, '确认归还',
-            f'确认归还商品：{record[2]}\n'
+            f'确认归还商品：{record[2]}（尺码：{record[14]}）\n'
             f'归还数量：{return_qty} / {total_qty} 件\n'
             f'借用人：{record[6]}（{record[5]}）',
             QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
@@ -1373,9 +1571,12 @@ class MainWindow(QMainWindow):
 
         total_qty = record[9]
 
+        # 获取商品进价，自动计算赔付金额
+        cost_price = self.db.get_cost_price(record[1])
+
         comp_qty, ok = QInputDialog.getInt(
             self, '赔付数量',
-            f'商品：{record[2]}\n'
+            f'商品：{record[2]}（尺码：{record[14]}）\n'
             f'借出数量：{total_qty} 件\n'
             f'借用人：{record[6]}（{record[5]}）\n\n'
             f'请输入赔付数量：',
@@ -1383,16 +1584,19 @@ class MainWindow(QMainWindow):
         if not ok:
             return
 
+        default_amount = cost_price * comp_qty
         amount, ok = QInputDialog.getDouble(
             self, '赔付金额',
-            f'商品：{record[2]}（赔付 {comp_qty} 件）\n请输入赔付金额（¥）：',
-            0, 0, 999999, 2)
+            f'商品：{record[2]}（尺码：{record[14]}，赔付 {comp_qty} 件）\n'
+            f'进价：¥{cost_price:.2f} × {comp_qty} 件 = ¥{default_amount:.2f}\n\n'
+            f'请确认或修改赔付金额（¥）：',
+            default_amount, 0, 999999, 2)
         if not ok:
             return
 
         reply = QMessageBox.question(self, '确认赔付',
             f'确认对以下记录进行赔付：\n'
-            f'商品：{record[2]}\n'
+            f'商品：{record[2]}（尺码：{record[14]}）\n'
             f'赔付数量：{comp_qty} / {total_qty} 件\n'
             f'借用人：{record[6]}（{record[5]}）\n'
             f'赔付金额：¥{amount:.2f}',
@@ -1427,7 +1631,7 @@ class MainWindow(QMainWindow):
 
         reply = QMessageBox.question(self, '确认删除',
             f'确认删除以下记录？\n\n'
-            f'商品：{record[2]}\n'
+            f'商品：{record[2]}（尺码：{record[14]}）\n'
             f'数量：{quantity} 件\n'
             f'状态：{status}\n'
             f'借用人：{record[6]}（{record[5]}）\n\n'
@@ -1459,27 +1663,29 @@ class MainWindow(QMainWindow):
     def _fill_stock_table(self, data):
         self.stock_table.setSortingEnabled(False)
         self.stock_table.setRowCount(len(data))
-        # 数值列索引：0=记录ID, 9=数量, 12=赔付金额
-        numeric_cols = {0, 9, 12}
+        # 数值列索引：0=记录ID, 10=数量, 16=赔付金额
+        numeric_cols = {0, 10, 16}
         for row, item in enumerate(data):
             for col, value in enumerate(item):
-                # direction 列(10)显示为文字
-                if col == 10:
+                # direction 列(11)显示为文字
+                if col == 11:
                     display = '入库' if value == 1 else '借出'
-                elif col == 12:
+                elif col == 16:
                     display = f'{value:.2f}' if value else '0.00'
+                elif col == 17:
+                    display = '📷' if value else ''
                 else:
                     display = str(value) if value is not None else ''
-                cell = QTableWidgetItem(display)
+                cell = SortableTableItem(display)
                 cell.setTextAlignment(Qt.AlignCenter)
-                # 数值列设置 sortData 保证数字排序
+                # 数值列设置排序数据
                 if col in numeric_cols:
                     try:
                         cell.setData(Qt.UserRole, float(value) if value else 0)
                     except (ValueError, TypeError):
                         cell.setData(Qt.UserRole, 0)
-                # 状态列(11)着色
-                if col == 11:
+                # 状态列(12)着色
+                if col == 12:
                     if value == '借出':
                         cell.setForeground(QColor('#d96b6b'))
                         cell.setFont(QFont("", -1, QFont.Bold))
@@ -1502,27 +1708,114 @@ class MainWindow(QMainWindow):
         table = self.stock_table
         if table.item(row, 1):
             self.stock_id.setText(table.item(row, 1).text())
+        # 尺码列 = 3
         if table.item(row, 3):
-            self.stock_department.setText(table.item(row, 3).text())
+            size_text = table.item(row, 3).text()
+            idx = self.stock_size.findText(size_text)
+            if idx >= 0:
+                self.stock_size.setCurrentIndex(idx)
+            else:
+                self.stock_size.clear()
+                self.stock_size.addItem(size_text)
         if table.item(row, 4):
-            self.stock_team.setText(table.item(row, 4).text())
+            self.stock_department.setText(table.item(row, 4).text())
         if table.item(row, 5):
-            self.stock_host.setText(table.item(row, 5).text())
+            self.stock_team.setText(table.item(row, 5).text())
         if table.item(row, 6):
-            self.stock_anchor.setText(table.item(row, 6).text())
+            self.stock_host.setText(table.item(row, 6).text())
         if table.item(row, 7):
-            self.stock_contact.setText(table.item(row, 7).text())
-        if table.item(row, 9):
-            self.stock_num.setText(table.item(row, 9).text())
-        if table.item(row, 13):
-            self.stock_remark.setText(table.item(row, 13).text())
+            self.stock_anchor.setText(table.item(row, 7).text())
+        if table.item(row, 8):
+            self.stock_contact.setText(table.item(row, 8).text())
+        if table.item(row, 10):
+            self.stock_num.setText(table.item(row, 10).text())
+        if table.item(row, 15):
+            self.stock_remark.setText(table.item(row, 15).text())
+        # 图片预览
+        record_id_item = table.item(row, 0)
+        if record_id_item:
+            record = self.db.get_record_by_id(int(record_id_item.text()))
+            if record and record[15]:
+                self._show_image_preview(record[15])
+            else:
+                self._clear_stock_image()
+
+    # ---------- 图片相关 ----------
+    def _select_stock_image(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, '选择图片', '',
+            '图片文件 (*.png *.jpg *.jpeg *.bmp *.gif *.webp)')
+        if path:
+            self._stock_image_path = path
+            self._show_image_preview(path)
+
+    def _clear_stock_image(self):
+        self._stock_image_path = ''
+        self.stock_img_preview.setPixmap(QPixmap())
+        self.stock_img_preview.setText('暂无图片')
+
+    def _show_image_preview(self, path):
+        if path and os.path.isfile(path):
+            pixmap = QPixmap(path)
+            if not pixmap.isNull():
+                scaled = pixmap.scaled(
+                    self.stock_img_preview.size(),
+                    Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                self.stock_img_preview.setPixmap(scaled)
+                self.stock_img_preview.setText('')
+                return
+        self.stock_img_preview.setPixmap(QPixmap())
+        self.stock_img_preview.setText('暂无图片')
+
+    def _preview_stock_image(self, event=None):
+        """点击预览图放大查看"""
+        # 优先从当前预览来源取路径
+        path = self._stock_image_path
+        if not path:
+            # 尝试从选中行获取
+            selected = self.stock_table.currentRow()
+            if selected >= 0:
+                record_id_item = self.stock_table.item(selected, 0)
+                if record_id_item:
+                    record = self.db.get_record_by_id(int(record_id_item.text()))
+                    if record:
+                        path = record[15]
+        if not path or not os.path.isfile(path):
+            return
+        dlg = QDialog(self)
+        dlg.setWindowTitle('查看图片')
+        dlg.setMinimumSize(600, 500)
+        lay = QVBoxLayout(dlg)
+        lbl = QLabel()
+        lbl.setAlignment(Qt.AlignCenter)
+        pixmap = QPixmap(path)
+        if not pixmap.isNull():
+            scaled = pixmap.scaled(580, 460, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            lbl.setPixmap(scaled)
+        lay.addWidget(lbl)
+        dlg.exec_()
+
+    def _save_stock_image(self, src_path):
+        """复制图片到 stock_images 目录，返回保存路径"""
+        if not src_path or not os.path.isfile(src_path):
+            return ''
+        dest_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'stock_images')
+        os.makedirs(dest_dir, exist_ok=True)
+        ext = os.path.splitext(src_path)[1]
+        filename = f"{uuid.uuid4().hex}{ext}"
+        dest = os.path.join(dest_dir, filename)
+        shutil.copy2(src_path, dest)
+        return dest
 
     def clear_stock_form(self):
         for w in [self.stock_id, self.stock_department, self.stock_team,
                   self.stock_host, self.stock_anchor, self.stock_contact,
                   self.stock_num, self.stock_remark]:
             w.clear()
+        self.stock_size.clear()
+        self.stock_size.addItem('均码')
         self.stock_date.setDate(QDate.currentDate())
+        self._clear_stock_image()
 
 
 # ===================== 程序入口 =====================
