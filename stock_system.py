@@ -318,13 +318,215 @@ QLineEdit#searchInput {
     background: #fff;
 }
 
-/* ---- 消息框 ---- */
+/* ---- 消息框 & 对话框 ---- */
 QMessageBox {
-    background: #fff;
+    background: #fdfbf9;
+    border: 1px solid #e0d8d0;
+    border-radius: 12px;
 }
 QMessageBox QLabel {
     font-size: 13px;
     color: #333;
+    padding: 8px 4px;
+    background: transparent;
+}
+QMessageBox QPushButton {
+    min-width: 80px;
+    min-height: 28px;
+    padding: 6px 20px;
+    font-size: 13px;
+    font-weight: bold;
+    border-radius: 8px;
+    color: #fff;
+    background: qlineargradient(x1:0,y1:0,x2:1,y2:0,
+        stop:0 #7a5c3e, stop:1 #96754e);
+}
+QMessageBox QPushButton:hover {
+    background: qlineargradient(x1:0,y1:0,x2:1,y2:0,
+        stop:0 #6b4f33, stop:1 #866740);
+}
+QMessageBox QPushButton:pressed {
+    background: #5a4028;
+}
+
+QInputDialog {
+    background: #fdfbf9;
+    border: 1px solid #e0d8d0;
+}
+QInputDialog QLabel {
+    font-size: 13px;
+    color: #333;
+    padding: 4px 2px;
+    background: transparent;
+}
+QInputDialog QSpinBox, QInputDialog QDoubleSpinBox {
+    border: 1px solid #d4ccc4;
+    border-radius: 8px;
+    padding: 6px 10px;
+    font-size: 13px;
+    background: #fff;
+    color: #333;
+}
+QInputDialog QSpinBox:focus, QInputDialog QDoubleSpinBox:focus {
+    border: 2px solid #b08968;
+}
+QInputDialog QPushButton {
+    min-width: 80px;
+    min-height: 28px;
+    padding: 6px 20px;
+    font-size: 13px;
+    font-weight: bold;
+    border-radius: 8px;
+    color: #fff;
+    background: qlineargradient(x1:0,y1:0,x2:1,y2:0,
+        stop:0 #7a5c3e, stop:1 #96754e);
+}
+QInputDialog QPushButton:hover {
+    background: qlineargradient(x1:0,y1:0,x2:1,y2:0,
+        stop:0 #6b4f33, stop:1 #866740);
+}
+
+QDialog {
+    background: #fdfbf9;
+    border: 1px solid #e0d8d0;
+}
+QDialog QLabel {
+    color: #333;
+    font-size: 13px;
+    background: transparent;
+}
+QDialog QPushButton {
+    min-width: 80px;
+    min-height: 28px;
+    padding: 6px 20px;
+    font-size: 13px;
+    font-weight: bold;
+    border-radius: 8px;
+    color: #fff;
+    background: qlineargradient(x1:0,y1:0,x2:1,y2:0,
+        stop:0 #7a5c3e, stop:1 #96754e);
+}
+QDialog QPushButton:hover {
+    background: qlineargradient(x1:0,y1:0,x2:1,y2:0,
+        stop:0 #6b4f33, stop:1 #866740);
+}
+
+/* ---- 滚动条 ---- */
+QScrollBar:vertical {
+    background: #f5f0eb;
+    width: 8px;
+    border-radius: 4px;
+    margin: 2px;
+}
+QScrollBar::handle:vertical {
+    background: #d4ccc4;
+    border-radius: 4px;
+    min-height: 30px;
+}
+QScrollBar::handle:vertical:hover {
+    background: #b08968;
+}
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+    height: 0px;
+}
+QScrollBar:horizontal {
+    background: #f5f0eb;
+    height: 8px;
+    border-radius: 4px;
+    margin: 2px;
+}
+QScrollBar::handle:horizontal {
+    background: #d4ccc4;
+    border-radius: 4px;
+    min-width: 30px;
+}
+QScrollBar::handle:horizontal:hover {
+    background: #b08968;
+}
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
+    width: 0px;
+}
+
+/* ---- 工具提示 ---- */
+QToolTip {
+    background: #fdfbf9;
+    color: #333;
+    border: 1px solid #d4ccc4;
+    border-radius: 6px;
+    padding: 6px 10px;
+    font-size: 12px;
+}
+
+/* ---- 日历弹窗 ---- */
+QCalendarWidget {
+    background: #fdfbf9;
+    border: 1px solid #e0d8d0;
+    border-radius: 8px;
+}
+QCalendarWidget QToolButton {
+    color: #6b5b4e;
+    font-size: 13px;
+    font-weight: bold;
+    background: transparent;
+    border: none;
+    padding: 4px 8px;
+    border-radius: 6px;
+}
+QCalendarWidget QToolButton:hover {
+    background: #f0e8e0;
+}
+QCalendarWidget QWidget#qt_calendar_navigationbar {
+    background: #f9f5f1;
+    border-bottom: 1px solid #e0d8d0;
+    border-top-left-radius: 8px;
+    border-top-right-radius: 8px;
+    padding: 4px;
+}
+QCalendarWidget QAbstractItemView {
+    background: #fff;
+    selection-background-color: #b08968;
+    selection-color: #fff;
+    font-size: 12px;
+    outline: none;
+}
+QCalendarWidget QAbstractItemView:enabled {
+    color: #333;
+}
+QCalendarWidget QAbstractItemView:disabled {
+    color: #bbb;
+}
+
+/* ---- SpinBox 通用 ---- */
+QSpinBox, QDoubleSpinBox {
+    border: 1px solid #d4ccc4;
+    border-radius: 8px;
+    padding: 6px 10px;
+    font-size: 13px;
+    background: #fff;
+    color: #333;
+}
+QSpinBox:focus, QDoubleSpinBox:focus {
+    border: 2px solid #b08968;
+}
+QSpinBox::up-button, QDoubleSpinBox::up-button,
+QSpinBox::down-button, QDoubleSpinBox::down-button {
+    border: none;
+    width: 18px;
+}
+
+/* ---- 进度条 ---- */
+QProgressBar {
+    border: 1px solid #d4ccc4;
+    border-radius: 6px;
+    text-align: center;
+    font-size: 11px;
+    color: #6b5b4e;
+    background: #f5f0eb;
+}
+QProgressBar::chunk {
+    background: qlineargradient(x1:0,y1:0,x2:1,y2:0,
+        stop:0 #b08968, stop:1 #c8a47e);
+    border-radius: 5px;
 }
 """
 
@@ -708,8 +910,17 @@ class LoginWindow(QMainWindow):
         self.login_btn = QPushButton('登  录')
         self.login_btn.setStyleSheet('''
             QPushButton {
-                min-height: 24px; font-size: 15px; font-weight: bold;
-                border-radius: 10px; color: #888;
+                min-height: 36px; font-size: 16px; font-weight: bold;
+                border-radius: 10px; color: #fff;
+                background: qlineargradient(x1:0,y1:0,x2:1,y2:0,
+                    stop:0 #7a5c3e, stop:1 #96754e);
+            }
+            QPushButton:hover {
+                background: qlineargradient(x1:0,y1:0,x2:1,y2:0,
+                    stop:0 #6b4f33, stop:1 #866740);
+            }
+            QPushButton:pressed {
+                background: #5a4028;
             }
         ''')
         self.login_btn.clicked.connect(self.login)
