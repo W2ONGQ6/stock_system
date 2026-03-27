@@ -3,9 +3,9 @@ import sqlite3
 import os
 import shutil
 import uuid
-from datetime import date
+from datetime import date, datetime
 from PyQt5.QtWidgets import *
-from PyQt5.QtCore import Qt, QSize, QDate
+from PyQt5.QtCore import Qt, QSize, QDate, QTimer
 from PyQt5.QtGui import QFont, QIcon, QColor, QPalette, QPixmap
 
 
@@ -715,7 +715,6 @@ class Database:
         return self.cursor.fetchall()
 
     def update_record_status(self, record_id, new_status, compensate_amount=0):
-        from datetime import datetime
         now = datetime.now().strftime('%Y-%m-%d %H:%M')
         self.cursor.execute(
             "UPDATE stock_records SET status=?, compensate_amount=?, return_date=? WHERE id=?",
@@ -730,7 +729,6 @@ class Database:
 
     def split_record_for_return(self, record_id, return_qty):
         """将借出记录拆分：return_qty 件标记为已归还，剩余保持借出"""
-        from datetime import datetime
         record = self.get_record_by_id(record_id)
         if not record:
             return False
@@ -764,7 +762,6 @@ class Database:
 
     def split_record_for_compensate(self, record_id, comp_qty, comp_amount):
         """将借出记录拆分：comp_qty 件标记为已赔付，剩余保持借出"""
-        from datetime import datetime
         record = self.get_record_by_id(record_id)
         if not record:
             return False
@@ -958,6 +955,7 @@ class MainWindow(QMainWindow):
         self.init_ui()
         self.load_clothing()
         self.load_stock_records()
+        self._setup_auto_backup()
 
     def init_ui(self):
         self.setWindowTitle('Nicloth（服装管理系统）')
@@ -2161,6 +2159,38 @@ class MainWindow(QMainWindow):
         self.stock_date.setDate(QDate.currentDate())
         self._clear_stock_image()
         self._selected_record_id = None
+
+    # ---------- 数据自动备份 ----------
+    def _setup_auto_backup(self):
+        """启动时立即备份一次，然后每30分钟自动备份"""
+        self._backup_dir = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), 'backups')
+        os.makedirs(self._backup_dir, exist_ok=True)
+        self._do_backup()  # 启动时备份
+        self._backup_timer = QTimer(self)
+        self._backup_timer.timeout.connect(self._do_backup)
+        self._backup_timer.start(30 * 60 * 1000)  # 30分钟
+
+    def _do_backup(self):
+        """执行数据库备份，保留最近10个备份文件"""
+        try:
+            db_path = os.path.join(
+                os.path.dirname(os.path.abspath(__file__)), 'clothing_db.db')
+            if not os.path.isfile(db_path):
+                return
+            ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+            backup_name = f'clothing_db_{ts}.db'
+            dest = os.path.join(self._backup_dir, backup_name)
+            shutil.copy2(db_path, dest)
+            # 清理旧备份，只保留最近10个
+            backups = sorted(
+                [f for f in os.listdir(self._backup_dir)
+                 if f.startswith('clothing_db_') and f.endswith('.db')],
+                reverse=True)
+            for old in backups[10:]:
+                os.remove(os.path.join(self._backup_dir, old))
+        except Exception:
+            pass  # 备份失败不影响正常使用
 
 
 # ===================== 程序入口 =====================
