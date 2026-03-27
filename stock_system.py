@@ -604,6 +604,28 @@ class Database:
         ''', (record_id,))
         return self.cursor.fetchone()
 
+    def update_record_fields(self, record_id, department, team_name, host_operator,
+                             anchor_name, contact, record_date, quantity, remark,
+                             size='', image_path=None):
+        """更新出入库记录的可编辑字段，image_path=None 表示不修改图片"""
+        if image_path is not None:
+            self.cursor.execute('''
+                UPDATE stock_records SET department=?, team_name=?, host_operator=?,
+                       anchor_name=?, contact=?, record_date=?, quantity=?,
+                       remark=?, size=?, image_path=?
+                WHERE id=?
+            ''', (department, team_name, host_operator, anchor_name, contact,
+                  record_date, quantity, remark, size, image_path, record_id))
+        else:
+            self.cursor.execute('''
+                UPDATE stock_records SET department=?, team_name=?, host_operator=?,
+                       anchor_name=?, contact=?, record_date=?, quantity=?,
+                       remark=?, size=?
+                WHERE id=?
+            ''', (department, team_name, host_operator, anchor_name, contact,
+                  record_date, quantity, remark, size, record_id))
+        self.conn.commit()
+
     def delete_stock_record(self, record_id):
         self.cursor.execute('DELETE FROM stock_records WHERE id=?', (record_id,))
         self.conn.commit()
@@ -626,7 +648,7 @@ class LoginWindow(QMainWindow):
         self.init_ui()
 
     def init_ui(self):
-        self.setWindowTitle('服装库存管理系统')
+        self.setWindowTitle('Nicloth（服装管理系统）')
         self.setFixedSize(420, 480)
         self.setStyleSheet("background-color: #f5f0eb;")
 
@@ -649,7 +671,7 @@ class LoginWindow(QMainWindow):
         logo_label.setStyleSheet('font-size: 48px; border: none;')
         card_layout.addWidget(logo_label)
 
-        title = QLabel('服装库存管理系统')
+        title = QLabel('Nicloth（服装管理系统）')
         title.setObjectName('loginTitle')
         title.setAlignment(Qt.AlignCenter)
         card_layout.addWidget(title)
@@ -727,7 +749,7 @@ class MainWindow(QMainWindow):
         self.load_stock_records()
 
     def init_ui(self):
-        self.setWindowTitle('服装库存管理系统')
+        self.setWindowTitle('Nicloth（服装管理系统）')
         self.setMinimumSize(1080, 680)
         self.resize(1160, 720)
 
@@ -740,7 +762,7 @@ class MainWindow(QMainWindow):
 
         # ---- 顶部栏 ----
         header = QHBoxLayout()
-        app_title = QLabel('👗 服装库存管理系统')
+        app_title = QLabel('👗 Nicloth（服装管理系统）')
         app_title.setStyleSheet('font-size: 20px; font-weight: bold; color: #3a3a3a;')
         header.addWidget(app_title)
         header.addStretch()
@@ -1107,11 +1129,18 @@ class MainWindow(QMainWindow):
         btn_row2.addWidget(self.compensate_btn)
         form_outer.addLayout(btn_row2)
 
-        # 清空按钮
+        # 修改/清空按钮（一组）
+        btn_row3 = QHBoxLayout()
+        btn_row3.setSpacing(12)
+        self.stock_edit_btn = QPushButton('✏ 修改记录')
+        self.stock_edit_btn.setObjectName('secondaryBtn')
+        self.stock_edit_btn.clicked.connect(self.edit_stock_record)
         self.stock_clear_btn = QPushButton('↺ 清空表单')
         self.stock_clear_btn.setObjectName('secondaryBtn')
         self.stock_clear_btn.clicked.connect(self.clear_stock_form)
-        form_outer.addWidget(self.stock_clear_btn)
+        btn_row3.addWidget(self.stock_edit_btn)
+        btn_row3.addWidget(self.stock_clear_btn)
+        form_outer.addLayout(btn_row3)
 
         # 删除记录按钮
         self.stock_del_btn = QPushButton('✕ 删除记录')
@@ -1704,8 +1733,11 @@ class MainWindow(QMainWindow):
         self._fill_stock_table(data)
 
     def select_stock_record(self, row):
-        """点击记录行时，将信息填充到左侧表单（用于归还/赔付操作参考）"""
+        """点击记录行时，将信息填充到左侧表单（用于归还/赔付/修改操作）"""
         table = self.stock_table
+        # 记住选中的记录ID，用于修改操作
+        record_id_item = table.item(row, 0)
+        self._selected_record_id = int(record_id_item.text()) if record_id_item else None
         if table.item(row, 1):
             self.stock_id.setText(table.item(row, 1).text())
         # 尺码列 = 3
@@ -1739,6 +1771,107 @@ class MainWindow(QMainWindow):
                 self._show_image_preview(record[15])
             else:
                 self._clear_stock_image()
+
+    # ---------- 修改记录 ----------
+    def edit_stock_record(self):
+        """修改选中的出入库记录"""
+        record_id = getattr(self, '_selected_record_id', None)
+        if not record_id:
+            QMessageBox.warning(self, '提示', '请先在右侧表格中选择一条记录')
+            return
+        record = self.db.get_record_by_id(record_id)
+        if not record:
+            QMessageBox.warning(self, '提示', '未找到该记录')
+            return
+
+        old_qty = record[9]
+        old_direction = record[10]
+        old_clothing_id = record[1]
+
+        # 从表单读取新值
+        num_text = self.stock_num.text().strip()
+        if not num_text:
+            QMessageBox.warning(self, '提示', '请输入数量')
+            return
+        try:
+            new_qty = abs(int(num_text))
+        except ValueError:
+            QMessageBox.warning(self, '提示', '数量必须为正整数')
+            return
+        if new_qty <= 0:
+            QMessageBox.warning(self, '提示', '数量必须大于 0')
+            return
+
+        new_dept = self.stock_department.text().strip()
+        new_team = self.stock_team.text().strip()
+        new_host = self.stock_host.text().strip()
+        new_anchor = self.stock_anchor.text().strip()
+        new_contact = self.stock_contact.text().strip()
+        new_date = self.stock_date.date().toString('yyyy-MM-dd')
+        new_remark = self.stock_remark.text().strip()
+        size_data = self.stock_size.currentData()
+        new_size = size_data if size_data else self.stock_size.currentText().strip()
+
+        # 图片处理：如果用户选了新图片则保存，否则保持原有
+        image_path_arg = None
+        if self._stock_image_path and os.path.isfile(self._stock_image_path):
+            # 用户选了新文件（非已保存路径），则保存
+            if not self._stock_image_path.startswith(
+                    os.path.join(os.path.dirname(os.path.abspath(__file__)), 'stock_images')):
+                image_path_arg = self._save_stock_image(self._stock_image_path)
+            else:
+                image_path_arg = self._stock_image_path
+
+        changes = []
+        if new_qty != old_qty:
+            changes.append(f'数量：{old_qty} → {new_qty}')
+        if new_dept != record[3]:
+            changes.append(f'部门：{record[3]} → {new_dept}')
+        if new_team != record[4]:
+            changes.append(f'团名：{record[4]} → {new_team}')
+        if new_host != record[5]:
+            changes.append(f'主持/运营：{record[5]} → {new_host}')
+        if new_anchor != record[6]:
+            changes.append(f'主播艺名：{record[6]} → {new_anchor}')
+        if new_contact != record[7]:
+            changes.append(f'联系方式：{record[7]} → {new_contact}')
+        if new_date != record[8]:
+            changes.append(f'日期：{record[8]} → {new_date}')
+        if new_remark != record[13]:
+            changes.append(f'备注：{record[13]} → {new_remark}')
+        if new_size != record[14]:
+            changes.append(f'尺码：{record[14]} → {new_size}')
+        if image_path_arg is not None and image_path_arg != record[15]:
+            changes.append('图片已更新')
+
+        if not changes:
+            QMessageBox.information(self, '提示', '未检测到修改')
+            return
+
+        reply = QMessageBox.question(self, '确认修改',
+            f'确认修改记录 #{record_id}？\n\n'
+            f'商品：{record[2]}（尺码：{record[14]}）\n\n'
+            + '\n'.join(changes),
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if reply != QMessageBox.Yes:
+            return
+
+        # 数量变化时调整库存
+        if new_qty != old_qty:
+            diff = (new_qty - old_qty) * old_direction
+            # 借出(direction=-1)增加数量 → 库存多扣；入库(direction=1)增加数量 → 库存多加
+            if not self.db.update_stock(old_clothing_id, diff):
+                QMessageBox.warning(self, '失败', '库存不足，无法修改数量！')
+                return
+
+        self.db.update_record_fields(
+            record_id, new_dept, new_team, new_host, new_anchor, new_contact,
+            new_date, new_qty, new_remark, new_size, image_path_arg)
+
+        self.load_clothing()
+        self.load_stock_records()
+        self._update_stats()
+        QMessageBox.information(self, '成功', '记录已修改')
 
     # ---------- 图片相关 ----------
     def _select_stock_image(self):
@@ -1816,6 +1949,7 @@ class MainWindow(QMainWindow):
         self.stock_size.addItem('均码')
         self.stock_date.setDate(QDate.currentDate())
         self._clear_stock_image()
+        self._selected_record_id = None
 
 
 # ===================== 程序入口 =====================
