@@ -605,6 +605,11 @@ class Database:
             self.cursor.execute("SELECT image_path FROM stock_records LIMIT 1")
         except sqlite3.OperationalError:
             self.cursor.execute("ALTER TABLE stock_records ADD COLUMN image_path TEXT DEFAULT ''")
+        # 兼容旧数据库：如果 clothing 表没有 image_path 列则添加
+        try:
+            self.cursor.execute("SELECT image_path FROM clothing LIMIT 1")
+        except sqlite3.OperationalError:
+            self.cursor.execute("ALTER TABLE clothing ADD COLUMN image_path TEXT DEFAULT ''")
         # 兼容旧数据库：如果 users 表没有 expires_at 列则添加
         try:
             self.cursor.execute("SELECT expires_at FROM users LIMIT 1")
@@ -631,16 +636,16 @@ class Database:
             (username, password))
         return self.cursor.fetchone()
 
-    def add_clothing(self, code, name, category, brand, size, color, season, stock, cost_price):
+    def add_clothing(self, code, name, category, brand, size, color, season, stock, cost_price, image_path=''):
         self.cursor.execute(
-            "INSERT INTO clothing (code,name,category,brand,size,color,season,stock,cost_price) VALUES (?,?,?,?,?,?,?,?,?)",
-            (code, name, category, brand, size, color, season, stock, cost_price))
+            "INSERT INTO clothing (code,name,category,brand,size,color,season,stock,cost_price,image_path) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (code, name, category, brand, size, color, season, stock, cost_price, image_path))
         self.conn.commit()
 
-    def update_clothing(self, id_, code, name, category, brand, size, color, season, stock, cost_price):
+    def update_clothing(self, id_, code, name, category, brand, size, color, season, stock, cost_price, image_path=''):
         self.cursor.execute(
-            "UPDATE clothing SET code=?,name=?,category=?,brand=?,size=?,color=?,season=?,stock=?,cost_price=? WHERE id=?",
-            (code, name, category, brand, size, color, season, stock, cost_price, id_))
+            "UPDATE clothing SET code=?,name=?,category=?,brand=?,size=?,color=?,season=?,stock=?,cost_price=?,image_path=? WHERE id=?",
+            (code, name, category, brand, size, color, season, stock, cost_price, image_path, id_))
         self.conn.commit()
 
     def delete_clothing(self, id_):
@@ -648,11 +653,11 @@ class Database:
         self.conn.commit()
 
     def get_all_clothing(self):
-        self.cursor.execute("SELECT id,code,name,category,brand,size,color,season,stock,cost_price FROM clothing")
+        self.cursor.execute("SELECT id,code,name,category,brand,size,color,season,stock,cost_price,image_path FROM clothing")
         return self.cursor.fetchall()
 
     def search_clothing(self, keyword):
-        query = "SELECT id,code,name,category,brand,size,color,season,stock,cost_price FROM clothing WHERE name LIKE ? OR code LIKE ? OR category LIKE ? OR brand LIKE ? OR color LIKE ?"
+        query = "SELECT id,code,name,category,brand,size,color,season,stock,cost_price,image_path FROM clothing WHERE name LIKE ? OR code LIKE ? OR category LIKE ? OR brand LIKE ? OR color LIKE ?"
         pattern = f"%{keyword}%"
         self.cursor.execute(query, (pattern, pattern, pattern, pattern, pattern))
         return self.cursor.fetchall()
@@ -983,7 +988,7 @@ class MainWindow(QMainWindow):
     CATEGORIES = ['上衣', '裤装', '裙装', '外套', '内衣', '鞋履', '配饰', '其他']
     SIZES = ['XS', 'S', 'M', 'L', 'XL', 'XXL', 'XXXL', '均码']
     SEASONS = ['春季', '夏季', '秋季', '冬季', '四季通用']
-    COLUMNS = ['', 'ID', '编号', '名称', '分类', '品牌', '尺码', '颜色', '季节', '库存', '进价(¥)']
+    COLUMNS = ['', 'ID', '编号', '名称', '分类', '品牌', '尺码', '颜色', '季节', '库存', '进价(¥)', '图片']
 
     def __init__(self, username='admin'):
         super().__init__()
@@ -1198,6 +1203,34 @@ class MainWindow(QMainWindow):
         form.addRow('库存：', self._wrap_field(self.c_stock))
         form.addRow('进价(¥)：', self._wrap_field(self.c_cost))
         form_outer.addLayout(form)
+
+        form_outer.addSpacing(8)
+
+        # 图片上传
+        self._clothing_image_path = ''
+        c_img_btn_row = QHBoxLayout()
+        c_img_btn_row.setSpacing(6)
+        self.c_img_btn = QPushButton('📷 选择图片')
+        self.c_img_btn.setObjectName('secondaryBtn')
+        self.c_img_btn.clicked.connect(self._select_clothing_image)
+        self.c_img_clear_btn = QPushButton('✕')
+        self.c_img_clear_btn.setFixedWidth(30)
+        self.c_img_clear_btn.setObjectName('secondaryBtn')
+        self.c_img_clear_btn.clicked.connect(self._clear_clothing_image)
+        c_img_btn_row.addWidget(self.c_img_btn)
+        c_img_btn_row.addWidget(self.c_img_clear_btn)
+        form_outer.addLayout(c_img_btn_row)
+
+        self.c_img_preview = QLabel()
+        self.c_img_preview.setFixedSize(280, 180)
+        self.c_img_preview.setAlignment(Qt.AlignCenter)
+        self.c_img_preview.setStyleSheet(
+            'QLabel { border: 1px dashed #c4a882; border-radius: 6px; '
+            'background: #faf7f4; color: #aaa; font-size: 12px; }')
+        self.c_img_preview.setText('暂无图片')
+        self.c_img_preview.setCursor(Qt.PointingHandCursor)
+        self.c_img_preview.mousePressEvent = self._preview_clothing_image
+        form_outer.addWidget(self.c_img_preview)
 
         form_outer.addSpacing(8)
 
@@ -1687,6 +1720,12 @@ class MainWindow(QMainWindow):
             self.clothing_table.setItem(row, 0, chk)
             for col, value in enumerate(item):
                 actual_col = col + 1  # 偏移 1
+                # 图片列（最后一列）显示图标
+                if actual_col == 11:
+                    cell = SortableTableItem('📷' if value else '')
+                    cell.setTextAlignment(Qt.AlignCenter)
+                    self.clothing_table.setItem(row, actual_col, cell)
+                    continue
                 cell = SortableTableItem(str(value))
                 cell.setTextAlignment(Qt.AlignCenter)
                 if actual_col in numeric_cols:
@@ -1745,6 +1784,15 @@ class MainWindow(QMainWindow):
             self.c_season.setCurrentText(se)
         self.c_stock.setText(table.item(row, 9).text())
         self.c_cost.setText(table.item(row, 10).text())
+        # 图片预览
+        clothing_id = int(table.item(row, 1).text())
+        self.db.cursor.execute("SELECT image_path FROM clothing WHERE id=?", (clothing_id,))
+        result = self.db.cursor.fetchone()
+        if result and result[0]:
+            self._clothing_image_path = result[0]
+            self._show_clothing_preview(result[0])
+        else:
+            self._clear_clothing_image()
 
     def clear_form(self):
         for w in [self.c_id, self.c_code, self.c_name, self.c_brand, self.c_color, self.c_stock, self.c_cost]:
@@ -1753,6 +1801,63 @@ class MainWindow(QMainWindow):
         self.c_size.setCurrentIndex(0)
         self.c_season.setCurrentIndex(0)
         self._clear_all_field_errors()
+        self._clear_clothing_image()
+
+    # ---------- 商品图片 ----------
+    def _select_clothing_image(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, '选择商品图片', '',
+            '图片文件 (*.png *.jpg *.jpeg *.bmp *.gif *.webp)')
+        if path:
+            self._clothing_image_path = path
+            self._show_clothing_preview(path)
+
+    def _clear_clothing_image(self):
+        self._clothing_image_path = ''
+        self.c_img_preview.setPixmap(QPixmap())
+        self.c_img_preview.setText('暂无图片')
+
+    def _show_clothing_preview(self, path):
+        if path and os.path.isfile(path):
+            pixmap = QPixmap(path)
+            if not pixmap.isNull():
+                scaled = pixmap.scaled(
+                    self.c_img_preview.size(),
+                    Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                self.c_img_preview.setPixmap(scaled)
+                self.c_img_preview.setText('')
+                return
+        self.c_img_preview.setPixmap(QPixmap())
+        self.c_img_preview.setText('暂无图片')
+
+    def _preview_clothing_image(self, event=None):
+        path = self._clothing_image_path
+        if not path or not os.path.isfile(path):
+            return
+        dlg = QDialog(self)
+        dlg.setWindowTitle('查看商品图片')
+        dlg.setMinimumSize(600, 500)
+        lay = QVBoxLayout(dlg)
+        lbl = QLabel()
+        lbl.setAlignment(Qt.AlignCenter)
+        pixmap = QPixmap(path)
+        if not pixmap.isNull():
+            scaled = pixmap.scaled(580, 460, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            lbl.setPixmap(scaled)
+        lay.addWidget(lbl)
+        dlg.exec_()
+
+    def _save_clothing_image(self, src_path):
+        """复制图片到 clothing_images 目录，返回保存路径"""
+        if not src_path or not os.path.isfile(src_path):
+            return ''
+        dest_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'clothing_images')
+        os.makedirs(dest_dir, exist_ok=True)
+        ext = os.path.splitext(src_path)[1]
+        filename = f"{uuid.uuid4().hex}{ext}"
+        dest = os.path.join(dest_dir, filename)
+        shutil.copy2(src_path, dest)
+        return dest
 
     def _validate_clothing_form(self):
         """校验商品表单字段，返回 (ok, stock_val, cost_val)"""
@@ -1794,12 +1899,13 @@ class MainWindow(QMainWindow):
         ok, stock_val, cost_val = self._validate_clothing_form()
         if not ok:
             return
+        saved_img = self._save_clothing_image(self._clothing_image_path)
         self.db.add_clothing(
             self.c_code.text().strip(),
             self.c_name.text().strip(), self.c_category.currentText(),
             self.c_brand.text().strip(),
             self.c_size.currentText(), self.c_color.text().strip(),
-            self.c_season.currentText(), stock_val, cost_val)
+            self.c_season.currentText(), stock_val, cost_val, saved_img)
         self.load_clothing()
         self.clear_form()
         QMessageBox.information(self, '成功', '服装商品已添加！')
@@ -1811,13 +1917,19 @@ class MainWindow(QMainWindow):
         ok, stock_val, cost_val = self._validate_clothing_form()
         if not ok:
             return
+        # 图片处理
+        img_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'clothing_images')
+        if self._clothing_image_path and not self._clothing_image_path.startswith(img_dir):
+            saved_img = self._save_clothing_image(self._clothing_image_path)
+        else:
+            saved_img = self._clothing_image_path
         self.db.update_clothing(
             int(self.c_id.text()),
             self.c_code.text().strip(),
             self.c_name.text().strip(), self.c_category.currentText(),
             self.c_brand.text().strip(), self.c_size.currentText(),
             self.c_color.text().strip(), self.c_season.currentText(),
-            stock_val, cost_val)
+            stock_val, cost_val, saved_img)
         self.load_clothing()
         QMessageBox.information(self, '成功', '商品信息已更新！')
 
