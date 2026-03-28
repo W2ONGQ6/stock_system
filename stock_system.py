@@ -975,6 +975,11 @@ class MainWindow(QMainWindow):
         app_title.setStyleSheet('font-size: 20px; font-weight: bold; color: #3a3a3a;')
         header.addWidget(app_title)
         header.addStretch()
+        help_btn = QPushButton('📖 使用手册')
+        help_btn.setObjectName('secondaryBtn')
+        help_btn.setStyleSheet('QPushButton { padding: 5px 14px; font-size: 12px; }')
+        help_btn.clicked.connect(self._show_help_manual)
+        header.addWidget(help_btn)
         user_label = QLabel(f'👤 {self.username}')
         user_label.setStyleSheet('font-size: 13px; color: #888; margin-right: 8px;')
         header.addWidget(user_label)
@@ -2159,6 +2164,160 @@ class MainWindow(QMainWindow):
         self.stock_date.setDate(QDate.currentDate())
         self._clear_stock_image()
         self._selected_record_id = None
+
+    # ---------- 使用手册 ----------
+    def _show_help_manual(self):
+        dlg = QDialog(self)
+        dlg.setWindowTitle('Nicloth 使用手册')
+        dlg.resize(720, 560)
+        lay = QVBoxLayout(dlg)
+        lay.setContentsMargins(0, 0, 0, 12)
+
+        text = QTextBrowser()
+        text.setOpenExternalLinks(False)
+        text.setStyleSheet(
+            'QTextBrowser { border: none; background: #fdfbf9; '
+            'padding: 20px 28px; font-size: 13px; color: #333; line-height: 1.7; }')
+        text.setHtml(self._HELP_HTML)
+        lay.addWidget(text)
+
+        close_btn = QPushButton('关闭')
+        close_btn.setFixedWidth(100)
+        close_btn.clicked.connect(dlg.accept)
+        btn_lay = QHBoxLayout()
+        btn_lay.addStretch()
+        btn_lay.addWidget(close_btn)
+        btn_lay.addStretch()
+        lay.addLayout(btn_lay)
+        dlg.exec_()
+
+    _HELP_HTML = '''
+    <div style="font-family:'Microsoft YaHei','PingFang SC',sans-serif;">
+    <h1 style="color:#b08968; text-align:center; margin-bottom:4px;">Nicloth 服装管理系统</h1>
+    <p style="text-align:center; color:#999; font-size:12px; margin-top:0;">用户使用手册</p>
+    <hr style="border:none; border-top:1px solid #e0d8d0; margin:12px 0;">
+
+    <h2 style="color:#6b5b4e;">一、系统简介</h2>
+    <p>Nicloth 服装管理系统是一款轻量化桌面端库存管理工具，专为服装行业打造，无需复杂配置即可上手使用。
+    系统主打服装商品管理、出入库操作、库存实时统计、记录追溯等核心功能，兼顾日常库存管控、货品领用归还、破损赔付等业务场景。</p>
+
+    <h2 style="color:#6b5b4e;">二、运行环境</h2>
+    <ul>
+    <li>支持系统：Windows、Linux、macOS</li>
+    <li>额外配置：无需手动安装数据库，开箱即用</li>
+    <li>初始账号：管理员 <b>admin</b>，密码 <b>123456</b></li>
+    </ul>
+
+    <h2 style="color:#6b5b4e;">三、快速入门</h2>
+    <h3 style="color:#7a5c3e;">3.1 系统登录</h3>
+    <ol>
+    <li>双击启动程序进入登录界面，账号密码已默认填充</li>
+    <li>点击<b>登录</b>按钮或在密码框按回车键快捷登录</li>
+    <li>验证通过后自动跳转至系统主界面</li>
+    </ol>
+    <h3 style="color:#7a5c3e;">3.2 主界面概览</h3>
+    <p>登录后主界面分为三大板块：</p>
+    <ul>
+    <li><b>顶部栏</b>：左侧显示系统名称，右侧展示当前用户名</li>
+    <li><b>实时统计区</b>：商品总数、总库存量、低库存预警、待归还</li>
+    <li><b>功能选项卡</b>：商品管理 和 出入库管理</li>
+    </ul>
+
+    <h2 style="color:#6b5b4e;">四、商品管理操作</h2>
+    <h3 style="color:#7a5c3e;">4.1 信息填写规则</h3>
+    <table style="border-collapse:collapse; width:100%; font-size:12px; margin:8px 0;">
+    <tr style="background:#f9f5f1;">
+        <th style="border:1px solid #e0d8d0; padding:6px 8px; color:#6b5b4e;">字段</th>
+        <th style="border:1px solid #e0d8d0; padding:6px 8px; color:#6b5b4e;">说明</th>
+    </tr>
+    <tr><td style="border:1px solid #e0d8d0; padding:6px 8px;">ID</td><td style="border:1px solid #e0d8d0; padding:6px 8px;">系统自动生成，只读</td></tr>
+    <tr><td style="border:1px solid #e0d8d0; padding:6px 8px;">编号</td><td style="border:1px solid #e0d8d0; padding:6px 8px;">自定义货品编码，支持模糊搜索</td></tr>
+    <tr><td style="border:1px solid #e0d8d0; padding:6px 8px;">名称 *</td><td style="border:1px solid #e0d8d0; padding:6px 8px;">必填，服装货品全称</td></tr>
+    <tr><td style="border:1px solid #e0d8d0; padding:6px 8px;">分类</td><td style="border:1px solid #e0d8d0; padding:6px 8px;">下拉选择：上衣、裤装、裙装、外套等</td></tr>
+    <tr><td style="border:1px solid #e0d8d0; padding:6px 8px;">尺码</td><td style="border:1px solid #e0d8d0; padding:6px 8px;">下拉选择：XS ~ XXXL、均码</td></tr>
+    <tr><td style="border:1px solid #e0d8d0; padding:6px 8px;">库存 *</td><td style="border:1px solid #e0d8d0; padding:6px 8px;">非负整数，默认 0</td></tr>
+    <tr><td style="border:1px solid #e0d8d0; padding:6px 8px;">进价</td><td style="border:1px solid #e0d8d0; padding:6px 8px;">非负数字，默认 0.00</td></tr>
+    </table>
+    <h3 style="color:#7a5c3e;">4.2 新增 / 修改 / 删除</h3>
+    <ul>
+    <li><b>新增</b>：填写表单 → 点击 ✚ 新增</li>
+    <li><b>修改</b>：选中表格行 → 修改表单 → 点击 ✎ 修改</li>
+    <li><b>删除</b>：选中表格行 → 点击 ✕ 删除 → 确认</li>
+    </ul>
+    <p style="color:#d96b6b;"><span style="color:#d96b6b;">&#9888;</span> 商品删除后无法恢复，删除前请确认无关联的未结出入库记录。</p>
+    <h3 style="color:#7a5c3e;">4.3 搜索与排序</h3>
+    <ul>
+    <li>输入关键词即可模糊搜索名称、编号、分类、品牌、颜色</li>
+    <li>点击列表头可按该列升序/降序排列</li>
+    </ul>
+
+    <h2 style="color:#6b5b4e;">五、出入库管理操作</h2>
+    <h3 style="color:#7a5c3e;">5.1 货品借出（出库）</h3>
+    <ol>
+    <li>切换至「出入库管理」选项卡</li>
+    <li>输入商品编号，选择尺码</li>
+    <li>填写部门、团队、经办人、联系方式、借出数量等</li>
+    <li>点击 <b>📤 借出</b> 按钮，系统自动扣减库存</li>
+    </ol>
+    <h3 style="color:#7a5c3e;">5.2 货品入库</h3>
+    <ol>
+    <li>输入商品编号、选择尺码、填写入库数量</li>
+    <li>点击 <b>📥 入库</b> 按钮，系统自动增加库存</li>
+    </ol>
+    <h3 style="color:#7a5c3e;">5.3 货品归还</h3>
+    <ol>
+    <li>选中状态为「借出」的记录</li>
+    <li>点击 <b>↩ 归还</b> 按钮，输入归还数量</li>
+    <li>全额归还→状态改为已归还；部分归还→自动拆分记录</li>
+    </ol>
+    <h3 style="color:#7a5c3e;">5.4 货品赔付</h3>
+    <ol>
+    <li>选中借出记录，点击 <b>💰 赔付</b></li>
+    <li>输入赔付数量和金额（默认按进价×数量自动计算）</li>
+    <li>全额/部分赔付同归还逻辑</li>
+    </ol>
+    <p style="color:#d96b6b;"><span style="color:#d96b6b;">&#9888;</span> 赔付操作不会恢复库存，仅做状态标记和金额记录。</p>
+    <h3 style="color:#7a5c3e;">5.5 记录修改与删除</h3>
+    <ul>
+    <li><b>修改</b>：选中记录 → 修改表单内容 → 点击 ✏ 修改记录（数量变化会同步调整库存）</li>
+    <li><b>删除</b>：选中记录 → 点击 ✕ 删除记录 → 确认（库存自动还原）</li>
+    </ul>
+    <h3 style="color:#7a5c3e;">5.6 图片上传</h3>
+    <p>出入库时可上传图片留档，点击「📷 选择图片」选取，点击缩略图可放大查看。</p>
+
+    <h2 style="color:#6b5b4e;">六、数据安全与备份</h2>
+    <ul>
+    <li>系统每 30 分钟自动备份数据库到 <code style="background:#f5f0eb; padding:2px 6px; border-radius:4px;">backups/</code> 目录，保留最近 10 份</li>
+    <li>数据库文件为 <code style="background:#f5f0eb; padding:2px 6px; border-radius:4px;">clothing_db.db</code>，存放在程序目录内</li>
+    <li>建议批量操作前手动备份数据库文件</li>
+    <li>请勿随意修改或删除数据库文件</li>
+    </ul>
+
+    <h2 style="color:#6b5b4e;">七、常见问题</h2>
+    <table style="border-collapse:collapse; width:100%; font-size:12px; margin:8px 0;">
+    <tr style="background:#f9f5f1;">
+        <th style="border:1px solid #e0d8d0; padding:6px 8px; color:#6b5b4e;">问题</th>
+        <th style="border:1px solid #e0d8d0; padding:6px 8px; color:#6b5b4e;">解决方法</th>
+    </tr>
+    <tr><td style="border:1px solid #e0d8d0; padding:6px 8px;">提示库存不足</td>
+        <td style="border:1px solid #e0d8d0; padding:6px 8px;">核对当前库存，调减出库数量</td></tr>
+    <tr><td style="border:1px solid #e0d8d0; padding:6px 8px;">归还/赔付数量错误</td>
+        <td style="border:1px solid #e0d8d0; padding:6px 8px;">输入大于0且不超出借出总数的整数</td></tr>
+    <tr><td style="border:1px solid #e0d8d0; padding:6px 8px;">搜索无结果</td>
+        <td style="border:1px solid #e0d8d0; padding:6px 8px;">简化关键词，只输入核心名称或编号</td></tr>
+    <tr><td style="border:1px solid #e0d8d0; padding:6px 8px;">登录失败</td>
+        <td style="border:1px solid #e0d8d0; padding:6px 8px;">使用 admin / 123456 登录，注意大小写</td></tr>
+    </table>
+
+    <h2 style="color:#6b5b4e;">八、注意事项</h2>
+    <div style="background:#fff5f5; border-left:4px solid #d96b6b; padding:10px 14px; border-radius:4px; margin:8px 0;">
+    <p style="margin:4px 0;"><span style="color:#d96b6b;">&#9888;</span> 删除商品/记录前务必再三确认，删除后<b>不可恢复</b></p>
+    <p style="margin:4px 0;"><span style="color:#d96b6b;">&#9888;</span> 出入库操作直接影响库存数据，务必如实填写</p>
+    <p style="margin:4px 0;"><span style="color:#d96b6b;">&#9888;</span> 仅授权管理员登录系统，禁止无关人员操作</p>
+    <p style="margin:4px 0;"><span style="color:#d96b6b;">&#9888;</span> 勿随意删除程序目录内的数据库文件</p>
+    </div>
+    </div>
+    '''
 
     # ---------- 数据自动备份 ----------
     def _setup_auto_backup(self):
