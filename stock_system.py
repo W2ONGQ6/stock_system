@@ -6,7 +6,7 @@ import uuid
 from datetime import date, datetime
 from PyQt5.QtWidgets import *
 from PyQt5.QtCore import Qt, QSize, QDate, QTimer
-from PyQt5.QtGui import QFont, QIcon, QColor, QPalette, QPixmap
+from PyQt5.QtGui import QFont, QIcon, QColor, QPalette, QPixmap, QIntValidator, QDoubleValidator
 
 
 class SortableTableItem(QTableWidgetItem):
@@ -222,7 +222,7 @@ QTabBar::tab {
     margin-right: 4px;
     border-top-left-radius: 10px;
     border-top-right-radius: 10px;
-    min-width: 120px;
+    min-width: 140px;
 }
 QTabBar::tab:selected {
     background: #fff;
@@ -605,15 +605,31 @@ class Database:
             self.cursor.execute("SELECT image_path FROM stock_records LIMIT 1")
         except sqlite3.OperationalError:
             self.cursor.execute("ALTER TABLE stock_records ADD COLUMN image_path TEXT DEFAULT ''")
-        # 默认管理员
+        # 兼容旧数据库：如果 users 表没有 expires_at 列则添加
+        try:
+            self.cursor.execute("SELECT expires_at FROM users LIMIT 1")
+        except sqlite3.OperationalError:
+            self.cursor.execute("ALTER TABLE users ADD COLUMN expires_at TEXT DEFAULT NULL")
+        # 默认管理员（试用账号，30天有效）
         self.cursor.execute("SELECT * FROM users WHERE username='admin'")
         if not self.cursor.fetchone():
-            self.cursor.execute("INSERT INTO users (username,password) VALUES (?,?)", ("admin", "123456"))
+            exp = (datetime.now() + __import__('datetime').timedelta(days=30)).strftime('%Y-%m-%d')
+            self.cursor.execute(
+                "INSERT INTO users (username,password,expires_at) VALUES (?,?,?)",
+                ("admin", "123456", exp))
+        # 正式账号（长期有效）
+        self.cursor.execute("SELECT * FROM users WHERE username='nicloth'")
+        if not self.cursor.fetchone():
+            self.cursor.execute(
+                "INSERT INTO users (username,password,expires_at) VALUES (?,?,?)",
+                ("nicloth", "nicloth2026", None))
         self.conn.commit()
 
     def check_login(self, username, password):
-        self.cursor.execute("SELECT * FROM users WHERE username=? AND password=?", (username, password))
-        return self.cursor.fetchone() is not None
+        self.cursor.execute(
+            "SELECT username, expires_at FROM users WHERE username=? AND password=?",
+            (username, password))
+        return self.cursor.fetchone()
 
     def add_clothing(self, code, name, category, brand, size, color, season, stock, cost_price):
         self.cursor.execute(
@@ -933,7 +949,28 @@ class LoginWindow(QMainWindow):
         if not username or not password:
             QMessageBox.warning(self, '提示', '请输入账号和密码')
             return
-        if self.db.check_login(username, password):
+        row = self.db.check_login(username, password)
+        if row:
+            expires_at = row[1]
+            if expires_at:
+                from datetime import datetime as _dt
+                try:
+                    exp_date = _dt.strptime(expires_at, '%Y-%m-%d').date()
+                    today = _dt.now().date()
+                    if today > exp_date:
+                        QMessageBox.warning(
+                            self, '账号已过期',
+                            f'账号「{username}」已于 {expires_at} 过期\n'
+                            '请联系管理员或使用其他账号登录')
+                        return
+                    remaining = (exp_date - today).days
+                    if remaining <= 7:
+                        QMessageBox.information(
+                            self, '账号即将过期',
+                            f'账号「{username}」将于 {expires_at} 过期\n'
+                            f'剩余 {remaining} 天，请及时联系管理员续期')
+                except ValueError:
+                    pass
             self.main_win = MainWindow(username)
             self.main_win.show()
             self.close()
@@ -946,7 +983,7 @@ class MainWindow(QMainWindow):
     CATEGORIES = ['上衣', '裤装', '裙装', '外套', '内衣', '鞋履', '配饰', '其他']
     SIZES = ['XS', 'S', 'M', 'L', 'XL', 'XXL', 'XXXL', '均码']
     SEASONS = ['春季', '夏季', '秋季', '冬季', '四季通用']
-    COLUMNS = ['ID', '编号', '名称', '分类', '品牌', '尺码', '颜色', '季节', '库存', '进价(¥)']
+    COLUMNS = ['', 'ID', '编号', '名称', '分类', '品牌', '尺码', '颜色', '季节', '库存', '进价(¥)']
 
     def __init__(self, username='admin'):
         super().__init__()
@@ -1002,6 +1039,7 @@ class MainWindow(QMainWindow):
         self.tab = QTabWidget()
         self.tab.addTab(self._create_stock_tab(), '🔄  出入库管理')
         self.tab.addTab(self._create_clothing_tab(), '📦  商品管理')
+        self.tab.addTab(self._create_settings_tab(), '🛠  系统设置')
         main_layout.addWidget(self.tab, 1)
 
     def _update_sort_indicator(self, table, base_cols, sorted_col):
@@ -1048,6 +1086,50 @@ class MainWindow(QMainWindow):
         self.stat_low._num_label.setText(str(low))
         self.stat_cats._num_label.setText(str(borrowed))
 
+    # ---------- 内联校验工具 ----------
+    def _wrap_field(self, widget):
+        """将输入控件包装：控件 + 隐藏的错误提示 QLabel，返回 (container, error_label)"""
+        container = QWidget()
+        vbox = QVBoxLayout(container)
+        vbox.setContentsMargins(0, 0, 0, 0)
+        vbox.setSpacing(2)
+        vbox.addWidget(widget)
+        err = QLabel()
+        err.setStyleSheet('color: #e53935; font-size: 11px; padding: 0; margin: 0;')
+        err.setWordWrap(True)
+        err.hide()
+        vbox.addWidget(err)
+        if not hasattr(self, '_field_error_labels'):
+            self._field_error_labels = {}
+        self._field_error_labels[widget] = err
+        return container
+
+    def _set_field_error(self, widget, msg):
+        """为控件设置红色边框 + 显示错误文字"""
+        border_css = 'border: 1.5px solid #e53935; border-radius: 4px;'
+        if isinstance(widget, QComboBox):
+            widget.setStyleSheet(f'QComboBox {{ {border_css} }}')
+        else:
+            widget.setStyleSheet(border_css)
+        lbl = self._field_error_labels.get(widget)
+        if lbl:
+            lbl.setText(msg)
+            lbl.show()
+        widget.setFocus()
+
+    def _clear_field_error(self, widget):
+        """清除单个控件的错误状态"""
+        widget.setStyleSheet('')
+        lbl = self._field_error_labels.get(widget)
+        if lbl:
+            lbl.hide()
+
+    def _clear_all_field_errors(self):
+        """清除所有已注册控件的错误状态"""
+        for widget, lbl in getattr(self, '_field_error_labels', {}).items():
+            widget.setStyleSheet('')
+            lbl.hide()
+
     # ---------- 商品管理标签 ----------
     def _create_clothing_tab(self):
         widget = QWidget()
@@ -1077,35 +1159,44 @@ class MainWindow(QMainWindow):
         self.c_id = QLineEdit()
         self.c_id.setReadOnly(True)
         self.c_id.setPlaceholderText('自动生成')
+        self.c_id.setStyleSheet('background: #f0ebe6; color: #999;')
         self.c_code = QLineEdit()
         self.c_code.setPlaceholderText('输入编号')
         self.c_name = QLineEdit()
         self.c_name.setPlaceholderText('输入服装名称')
         self.c_category = QComboBox()
+        self.c_category.setEditable(True)
         self.c_category.addItems(self.CATEGORIES)
+        self.c_category.setCurrentIndex(0)
         self.c_brand = QLineEdit()
         self.c_brand.setPlaceholderText('输入品牌')
         self.c_size = QComboBox()
+        self.c_size.setEditable(True)
         self.c_size.addItems(self.SIZES)
+        self.c_size.setCurrentIndex(0)
         self.c_color = QLineEdit()
         self.c_color.setPlaceholderText('输入颜色')
         self.c_season = QComboBox()
+        self.c_season.setEditable(True)
         self.c_season.addItems(self.SEASONS)
+        self.c_season.setCurrentIndex(0)
         self.c_stock = QLineEdit()
         self.c_stock.setPlaceholderText('0')
+        self.c_stock.setValidator(QIntValidator(0, 999999, self))
         self.c_cost = QLineEdit()
         self.c_cost.setPlaceholderText('0.00')
+        self.c_cost.setValidator(QDoubleValidator(0, 999999, 2, self))
 
         form.addRow('ID：', self.c_id)
         form.addRow('编号：', self.c_code)
-        form.addRow('名称：', self.c_name)
+        form.addRow('名称：', self._wrap_field(self.c_name))
         form.addRow('分类：', self.c_category)
         form.addRow('品牌：', self.c_brand)
         form.addRow('尺码：', self.c_size)
         form.addRow('颜色：', self.c_color)
         form.addRow('季节：', self.c_season)
-        form.addRow('库存：', self.c_stock)
-        form.addRow('进价(¥)：', self.c_cost)
+        form.addRow('库存：', self._wrap_field(self.c_stock))
+        form.addRow('进价(¥)：', self._wrap_field(self.c_cost))
         form_outer.addLayout(form)
 
         form_outer.addSpacing(8)
@@ -1166,7 +1257,7 @@ class MainWindow(QMainWindow):
 
         # 表格
         self.clothing_table = QTableWidget()
-        self.clothing_table.setColumnCount(10)
+        self.clothing_table.setColumnCount(len(self.COLUMNS))
         self.clothing_table.setHorizontalHeaderLabels(self.COLUMNS)
         self.clothing_table.setSelectionBehavior(QTableWidget.SelectRows)
         self.clothing_table.setSelectionMode(QTableWidget.SingleSelection)
@@ -1178,14 +1269,92 @@ class MainWindow(QMainWindow):
         self.clothing_table.horizontalHeader().setStretchLastSection(True)
         self.clothing_table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
         self.clothing_table.horizontalHeader().setMinimumSectionSize(60)
+        self.clothing_table.setColumnWidth(0, 36)
+        self.clothing_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Fixed)
         self.clothing_table.resizeColumnsToContents()
         self.clothing_table.verticalHeader().setVisible(False)
         self.clothing_table.setSortingEnabled(True)
         self.clothing_table.horizontalHeader().setSortIndicatorShown(False)
         self.clothing_table.horizontalHeader().sectionClicked.connect(
-            lambda col: self._update_sort_indicator(self.clothing_table, self.COLUMNS, col))
+            lambda col: self._on_clothing_header_clicked(col))
         self.clothing_table.cellClicked.connect(self.select_clothing)
         right_panel.addWidget(self.clothing_table, 1)
+
+        # ── 批量操作栏 ──
+        batch_bar = QHBoxLayout()
+        batch_bar.setSpacing(10)
+        self.batch_select_all = QPushButton('☐ 全选')
+        self.batch_select_all.setObjectName('secondaryBtn')
+        self.batch_select_all.setMinimumWidth(70)
+        self.batch_select_all.clicked.connect(self._toggle_select_all)
+        batch_bar.addWidget(self.batch_select_all)
+        self.batch_selected_label = QLabel('已选 0 项')
+        self.batch_selected_label.setStyleSheet('color: #888; font-size: 12px;')
+        batch_bar.addWidget(self.batch_selected_label)
+        batch_bar.addStretch()
+        batch_add_stock = QPushButton('▲ 批量加库存')
+        batch_add_stock.setObjectName('secondaryBtn')
+        batch_add_stock.clicked.connect(lambda: self._batch_adjust_stock(1))
+        batch_sub_stock = QPushButton('▼ 批量减库存')
+        batch_sub_stock.setObjectName('secondaryBtn')
+        batch_sub_stock.clicked.connect(lambda: self._batch_adjust_stock(-1))
+        batch_del = QPushButton('✕ 批量删除')
+        batch_del.setObjectName('dangerBtn')
+        batch_del.clicked.connect(self._batch_delete)
+        batch_export = QPushButton('📊 导出Excel')
+        batch_export.setObjectName('secondaryBtn')
+        batch_export.clicked.connect(self._export_clothing_excel)
+        batch_bar.addWidget(batch_export)
+        batch_bar.addWidget(batch_add_stock)
+        batch_bar.addWidget(batch_sub_stock)
+        batch_bar.addWidget(batch_del)
+        right_panel.addLayout(batch_bar)
+
+        # ── 分页栏 ──
+        self._clothing_page = 1
+        self._clothing_page_size = 50
+        self._clothing_data = []
+        pager = QHBoxLayout()
+        pager.setSpacing(8)
+        self.cl_page_label = QLabel('共 0 条')
+        self.cl_page_label.setStyleSheet('color: #888; font-size: 12px;')
+        pager.addWidget(self.cl_page_label)
+        pager.addStretch()
+        self.cl_first_btn = QPushButton('«')
+        self.cl_prev_btn = QPushButton('‹')
+        self.cl_page_info = QLabel('1 / 1')
+        self.cl_page_info.setStyleSheet('color: #6b5b4e; font-size: 12px; font-weight: bold;')
+        self.cl_page_info.setAlignment(Qt.AlignCenter)
+        self.cl_page_info.setMinimumWidth(60)
+        self.cl_next_btn = QPushButton('›')
+        self.cl_last_btn = QPushButton('»')
+        for b in [self.cl_first_btn, self.cl_prev_btn, self.cl_next_btn, self.cl_last_btn]:
+            b.setObjectName('secondaryBtn')
+            b.setFixedSize(32, 28)
+            b.setStyleSheet('QPushButton { padding: 0; font-size: 14px; }')
+        self.cl_first_btn.clicked.connect(lambda: self._clothing_go_page(1))
+        self.cl_prev_btn.clicked.connect(lambda: self._clothing_go_page(self._clothing_page - 1))
+        self.cl_next_btn.clicked.connect(lambda: self._clothing_go_page(self._clothing_page + 1))
+        self.cl_last_btn.clicked.connect(lambda: self._clothing_go_page(self._clothing_total_pages()))
+        pager.addWidget(self.cl_first_btn)
+        pager.addWidget(self.cl_prev_btn)
+        pager.addWidget(self.cl_page_info)
+        pager.addWidget(self.cl_next_btn)
+        pager.addWidget(self.cl_last_btn)
+        pager.addStretch()
+        lbl = QLabel('每页')
+        lbl.setStyleSheet('color: #888; font-size: 12px;')
+        self.cl_page_size_combo = QComboBox()
+        self.cl_page_size_combo.addItems(['20', '50', '100', '200'])
+        self.cl_page_size_combo.setCurrentText('50')
+        self.cl_page_size_combo.setFixedWidth(65)
+        self.cl_page_size_combo.currentTextChanged.connect(self._clothing_page_size_changed)
+        lbl2 = QLabel('条')
+        lbl2.setStyleSheet('color: #888; font-size: 12px;')
+        pager.addWidget(lbl)
+        pager.addWidget(self.cl_page_size_combo)
+        pager.addWidget(lbl2)
+        right_panel.addLayout(pager)
 
         layout.addWidget(scroll)
         layout.addLayout(right_panel, 1)
@@ -1264,6 +1433,7 @@ class MainWindow(QMainWindow):
         self.stock_date.setDisplayFormat('yyyy-MM-dd')
         self.stock_num = QLineEdit()
         self.stock_num.setPlaceholderText('输入数量')
+        self.stock_num.setValidator(QIntValidator(1, 999999, self))
         self.stock_remark = QLineEdit()
         self.stock_remark.setPlaceholderText('备注信息')
 
@@ -1293,15 +1463,15 @@ class MainWindow(QMainWindow):
         self.stock_img_preview.setCursor(Qt.PointingHandCursor)
         self.stock_img_preview.mousePressEvent = self._preview_stock_image
 
-        form.addRow('编号：', self.stock_id)
+        form.addRow('编号：', self._wrap_field(self.stock_id))
         form.addRow('尺码：', self.stock_size)
         form.addRow('部门：', self.stock_department)
         form.addRow('团名：', self.stock_team)
         form.addRow('主持/运营：', self.stock_host)
-        form.addRow('主播艺名：', self.stock_anchor)
-        form.addRow('联系方式：', self.stock_contact)
+        form.addRow('主播艺名：', self._wrap_field(self.stock_anchor))
+        form.addRow('联系方式：', self._wrap_field(self.stock_contact))
         form.addRow('操作日期：', self.stock_date)
-        form.addRow('数量：', self.stock_num)
+        form.addRow('数量：', self._wrap_field(self.stock_num))
         form.addRow('备注：', self.stock_remark)
         form.addRow('图片：', img_btn_widget)
         form_outer.addLayout(form)
@@ -1376,7 +1546,12 @@ class MainWindow(QMainWindow):
         self.stock_search_input.setObjectName('searchInput')
         self.stock_search_input.setPlaceholderText('🔍  搜索商品名 / 部门 / 团名 / 主播 ...')
         self.stock_search_input.textChanged.connect(self.search_stock_records)
+        stock_export_btn = QPushButton('📊 导出Excel')
+        stock_export_btn.setObjectName('secondaryBtn')
+        stock_export_btn.setMinimumWidth(100)
+        stock_export_btn.clicked.connect(self._export_stock_excel)
         search_row.addWidget(self.stock_search_input)
+        search_row.addWidget(stock_export_btn)
         right_panel.addLayout(search_row)
 
         # 记录表格
@@ -1400,6 +1575,52 @@ class MainWindow(QMainWindow):
         self.stock_table.cellClicked.connect(self.select_stock_record)
         right_panel.addWidget(self.stock_table, 1)
 
+        # ── 分页栏 ──
+        self._stock_page = 1
+        self._stock_page_size = 50
+        self._stock_data = []
+        pager2 = QHBoxLayout()
+        pager2.setSpacing(8)
+        self.st_page_label = QLabel('共 0 条')
+        self.st_page_label.setStyleSheet('color: #888; font-size: 12px;')
+        pager2.addWidget(self.st_page_label)
+        pager2.addStretch()
+        self.st_first_btn = QPushButton('«')
+        self.st_prev_btn = QPushButton('‹')
+        self.st_page_info = QLabel('1 / 1')
+        self.st_page_info.setStyleSheet('color: #6b5b4e; font-size: 12px; font-weight: bold;')
+        self.st_page_info.setAlignment(Qt.AlignCenter)
+        self.st_page_info.setMinimumWidth(60)
+        self.st_next_btn = QPushButton('›')
+        self.st_last_btn = QPushButton('»')
+        for b in [self.st_first_btn, self.st_prev_btn, self.st_next_btn, self.st_last_btn]:
+            b.setObjectName('secondaryBtn')
+            b.setFixedSize(32, 28)
+            b.setStyleSheet('QPushButton { padding: 0; font-size: 14px; }')
+        self.st_first_btn.clicked.connect(lambda: self._stock_go_page(1))
+        self.st_prev_btn.clicked.connect(lambda: self._stock_go_page(self._stock_page - 1))
+        self.st_next_btn.clicked.connect(lambda: self._stock_go_page(self._stock_page + 1))
+        self.st_last_btn.clicked.connect(lambda: self._stock_go_page(self._stock_total_pages()))
+        pager2.addWidget(self.st_first_btn)
+        pager2.addWidget(self.st_prev_btn)
+        pager2.addWidget(self.st_page_info)
+        pager2.addWidget(self.st_next_btn)
+        pager2.addWidget(self.st_last_btn)
+        pager2.addStretch()
+        lbl3 = QLabel('每页')
+        lbl3.setStyleSheet('color: #888; font-size: 12px;')
+        self.st_page_size_combo = QComboBox()
+        self.st_page_size_combo.addItems(['20', '50', '100', '200'])
+        self.st_page_size_combo.setCurrentText('50')
+        self.st_page_size_combo.setFixedWidth(65)
+        self.st_page_size_combo.currentTextChanged.connect(self._stock_page_size_changed)
+        lbl4 = QLabel('条')
+        lbl4.setStyleSheet('color: #888; font-size: 12px;')
+        pager2.addWidget(lbl3)
+        pager2.addWidget(self.st_page_size_combo)
+        pager2.addWidget(lbl4)
+        right_panel.addLayout(pager2)
+
         layout.addWidget(scroll)
         layout.addLayout(right_panel, 1)
         return widget
@@ -1407,55 +1628,123 @@ class MainWindow(QMainWindow):
     # ---------- 数据操作 ----------
     def load_clothing(self):
         data = self.db.get_all_clothing()
-        self._fill_table(data)
+        self._clothing_data = data
+        self._clothing_page = 1
+        self._render_clothing_page()
         self._update_stats()
+
+    def _clothing_total_pages(self):
+        total = len(self._clothing_data)
+        return max(1, (total + self._clothing_page_size - 1) // self._clothing_page_size)
+
+    def _clothing_go_page(self, page):
+        page = max(1, min(page, self._clothing_total_pages()))
+        if page == self._clothing_page:
+            return
+        self._clothing_page = page
+        self._render_clothing_page()
+
+    def _clothing_page_size_changed(self, text):
+        try:
+            self._clothing_page_size = int(text)
+        except ValueError:
+            return
+        self._clothing_page = 1
+        self._render_clothing_page()
+
+    def _render_clothing_page(self):
+        total = len(self._clothing_data)
+        pages = self._clothing_total_pages()
+        self._clothing_page = max(1, min(self._clothing_page, pages))
+        start = (self._clothing_page - 1) * self._clothing_page_size
+        end = start + self._clothing_page_size
+        page_data = self._clothing_data[start:end]
+        self._fill_table(page_data)
+        self.cl_page_label.setText(f'共 {total} 条')
+        self.cl_page_info.setText(f'{self._clothing_page} / {pages}')
+        self.cl_first_btn.setEnabled(self._clothing_page > 1)
+        self.cl_prev_btn.setEnabled(self._clothing_page > 1)
+        self.cl_next_btn.setEnabled(self._clothing_page < pages)
+        self.cl_last_btn.setEnabled(self._clothing_page < pages)
 
     def _fill_table(self, data):
         self.clothing_table.setSortingEnabled(False)
         self.clothing_table.setRowCount(len(data))
-        # 数值列：0=ID, 8=库存, 9=进价
-        numeric_cols = {0, 8, 9}
+        # 数值列：1=ID, 9=库存, 10=进价（偏移+1因为 col0 是复选框）
+        numeric_cols = {1, 9, 10}
+        low_stock_bg = QColor('#fde8e8')
+        low_stock_fg = QColor('#d96b6b')
         for row, item in enumerate(data):
+            # 判断该行是否低库存（库存列 index=9，即 item[9]）
+            stock_val = item[9] if len(item) > 9 else None
+            is_low = isinstance(stock_val, (int, float)) and stock_val <= 1
+            # 复选框列
+            chk = QTableWidgetItem()
+            chk.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled)
+            chk.setCheckState(Qt.Unchecked)
+            if is_low:
+                chk.setBackground(low_stock_bg)
+            self.clothing_table.setItem(row, 0, chk)
             for col, value in enumerate(item):
+                actual_col = col + 1  # 偏移 1
                 cell = SortableTableItem(str(value))
                 cell.setTextAlignment(Qt.AlignCenter)
-                if col in numeric_cols:
+                if actual_col in numeric_cols:
                     try:
                         cell.setData(Qt.UserRole, float(value) if value else 0)
                     except (ValueError, TypeError):
                         cell.setData(Qt.UserRole, 0)
-                # 低库存高亮 (库存列索引=8)
-                if col == 8 and isinstance(value, int) and value <= 1:
-                    cell.setForeground(QColor('#d96b6b'))
-                    cell.setFont(QFont("", -1, QFont.Bold))
-                self.clothing_table.setItem(row, col, cell)
+                if is_low:
+                    cell.setBackground(low_stock_bg)
+                    # 库存列额外红字加粗
+                    if actual_col == 9:
+                        cell.setForeground(low_stock_fg)
+                        cell.setFont(QFont("", -1, QFont.Bold))
+                self.clothing_table.setItem(row, actual_col, cell)
         self.clothing_table.resizeColumnsToContents()
+        self.clothing_table.setColumnWidth(0, 36)
         self.clothing_table.setSortingEnabled(True)
+        self._update_batch_count()
 
     def search_clothing(self, text):
         keyword = text.strip()
         data = self.db.search_clothing(keyword) if keyword else self.db.get_all_clothing()
-        self._fill_table(data)
+        self._clothing_data = data
+        self._clothing_page = 1
+        self._render_clothing_page()
 
-    def select_clothing(self, row):
+    def select_clothing(self, row, col=None):
+        # 点击复选框列时不填充表单，仅更新计数
+        if col == 0:
+            self._update_batch_count()
+            return
         table = self.clothing_table
-        self.c_id.setText(table.item(row, 0).text())
-        self.c_code.setText(table.item(row, 1).text())
-        self.c_name.setText(table.item(row, 2).text())
-        # 设置下拉框
-        cat = table.item(row, 3).text()
+        self.c_id.setText(table.item(row, 1).text())
+        self.c_code.setText(table.item(row, 2).text())
+        self.c_name.setText(table.item(row, 3).text())
+        # 设置下拉框（支持自定义值）
+        cat = table.item(row, 4).text()
         idx = self.c_category.findText(cat)
-        self.c_category.setCurrentIndex(idx if idx >= 0 else 0)
-        self.c_brand.setText(table.item(row, 4).text())
-        sz = table.item(row, 5).text()
+        if idx >= 0:
+            self.c_category.setCurrentIndex(idx)
+        else:
+            self.c_category.setCurrentText(cat)
+        self.c_brand.setText(table.item(row, 5).text())
+        sz = table.item(row, 6).text()
         idx = self.c_size.findText(sz)
-        self.c_size.setCurrentIndex(idx if idx >= 0 else 0)
-        self.c_color.setText(table.item(row, 6).text())
-        se = table.item(row, 7).text()
+        if idx >= 0:
+            self.c_size.setCurrentIndex(idx)
+        else:
+            self.c_size.setCurrentText(sz)
+        self.c_color.setText(table.item(row, 7).text())
+        se = table.item(row, 8).text()
         idx = self.c_season.findText(se)
-        self.c_season.setCurrentIndex(idx if idx >= 0 else 0)
-        self.c_stock.setText(table.item(row, 8).text())
-        self.c_cost.setText(table.item(row, 9).text())
+        if idx >= 0:
+            self.c_season.setCurrentIndex(idx)
+        else:
+            self.c_season.setCurrentText(se)
+        self.c_stock.setText(table.item(row, 9).text())
+        self.c_cost.setText(table.item(row, 10).text())
 
     def clear_form(self):
         for w in [self.c_id, self.c_code, self.c_name, self.c_brand, self.c_color, self.c_stock, self.c_cost]:
@@ -1463,13 +1752,20 @@ class MainWindow(QMainWindow):
         self.c_category.setCurrentIndex(0)
         self.c_size.setCurrentIndex(0)
         self.c_season.setCurrentIndex(0)
+        self._clear_all_field_errors()
 
     def _validate_clothing_form(self):
         """校验商品表单字段，返回 (ok, stock_val, cost_val)"""
+        self._clear_all_field_errors()
+        has_error = False
+        stock_val = 0
+        cost_val = 0
+
         name = self.c_name.text().strip()
         if not name:
-            QMessageBox.warning(self, '提示', '请输入服装名称')
-            return False, 0, 0
+            self._set_field_error(self.c_name, '请输入服装名称')
+            has_error = True
+
         stock_text = self.c_stock.text().strip()
         if stock_text:
             try:
@@ -1477,10 +1773,9 @@ class MainWindow(QMainWindow):
                 if stock_val < 0:
                     raise ValueError
             except ValueError:
-                QMessageBox.warning(self, '提示', '库存数量必须为非负整数')
-                return False, 0, 0
-        else:
-            stock_val = 0
+                self._set_field_error(self.c_stock, '库存数量必须为非负整数')
+                has_error = True
+
         cost_text = self.c_cost.text().strip()
         if cost_text:
             try:
@@ -1488,10 +1783,11 @@ class MainWindow(QMainWindow):
                 if cost_val < 0:
                     raise ValueError
             except ValueError:
-                QMessageBox.warning(self, '提示', '进价必须为非负数字')
-                return False, 0, 0
-        else:
-            cost_val = 0
+                self._set_field_error(self.c_cost, '进价必须为非负数字')
+                has_error = True
+
+        if has_error:
+            return False, 0, 0
         return True, stock_val, cost_val
 
     def add_clothing(self):
@@ -1537,6 +1833,81 @@ class MainWindow(QMainWindow):
             self.load_clothing()
             self.clear_form()
             QMessageBox.information(self, '成功', '商品已删除！')
+
+    # ---------- 批量操作 ----------
+    def _on_clothing_header_clicked(self, col):
+        if col == 0:
+            self._toggle_select_all()
+        else:
+            self._update_sort_indicator(self.clothing_table, self.COLUMNS, col)
+
+    def _get_checked_ids(self):
+        """返回所有勾选行的 (row, clothing_id) 列表"""
+        result = []
+        for row in range(self.clothing_table.rowCount()):
+            chk = self.clothing_table.item(row, 0)
+            if chk and chk.checkState() == Qt.Checked:
+                id_item = self.clothing_table.item(row, 1)
+                if id_item:
+                    result.append((row, int(id_item.text())))
+        return result
+
+    def _update_batch_count(self):
+        count = len(self._get_checked_ids())
+        self.batch_selected_label.setText(f'已选 {count} 项')
+        self.batch_select_all.setText('☑ 全选' if count == self.clothing_table.rowCount() and count > 0 else '☐ 全选')
+
+    def _toggle_select_all(self):
+        checked = self._get_checked_ids()
+        all_checked = len(checked) == self.clothing_table.rowCount() and self.clothing_table.rowCount() > 0
+        new_state = Qt.Unchecked if all_checked else Qt.Checked
+        for row in range(self.clothing_table.rowCount()):
+            chk = self.clothing_table.item(row, 0)
+            if chk:
+                chk.setCheckState(new_state)
+        self._update_batch_count()
+
+    def _batch_delete(self):
+        checked = self._get_checked_ids()
+        if not checked:
+            QMessageBox.warning(self, '提示', '请先勾选要删除的商品')
+            return
+        reply = QMessageBox.question(self, '批量删除',
+            f'确定要删除选中的 {len(checked)} 件商品吗？\n\n'
+            '⚠ 删除后无法恢复！',
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if reply != QMessageBox.Yes:
+            return
+        for _, cid in checked:
+            self.db.delete_clothing(cid)
+        self.load_clothing()
+        self.clear_form()
+        QMessageBox.information(self, '成功', f'已删除 {len(checked)} 件商品')
+
+    def _batch_adjust_stock(self, direction):
+        checked = self._get_checked_ids()
+        if not checked:
+            QMessageBox.warning(self, '提示', '请先勾选要调整库存的商品')
+            return
+        label = '增加' if direction > 0 else '减少'
+        amount, ok = QInputDialog.getInt(
+            self, f'批量{label}库存',
+            f'已选中 {len(checked)} 件商品\n\n请输入{label}的库存数量：',
+            1, 1, 999999)
+        if not ok:
+            return
+        success = 0
+        fail = 0
+        for _, cid in checked:
+            if self.db.update_stock(cid, amount * direction):
+                success += 1
+            else:
+                fail += 1
+        self.load_clothing()
+        msg = f'已{label} {success} 件商品的库存（各 {amount} 件）'
+        if fail:
+            msg += f'\n{fail} 件因库存不足而跳过'
+        QMessageBox.information(self, '成功', msg)
 
     # ---------- Excel 导入导出 ----------
     def import_excel(self):
@@ -1684,30 +2055,42 @@ class MainWindow(QMainWindow):
         self.stock_size.view().setMinimumWidth(max(200, max_w))
 
     def operate_stock(self, direction):
+        self._clear_all_field_errors()
+        has_error = False
+
         code_text = self.stock_id.text().strip()
+        if not code_text:
+            self._set_field_error(self.stock_id, '请输入商品编号')
+            has_error = True
+
         num_text = self.stock_num.text().strip()
-        if not code_text or not num_text:
-            QMessageBox.warning(self, '提示', '请输入商品编号和数量')
-            return
-        try:
-            quantity = abs(int(num_text))
-        except ValueError:
-            QMessageBox.warning(self, '提示', '数量必须为正整数')
-            return
-        if quantity <= 0:
-            QMessageBox.warning(self, '提示', '数量必须大于 0')
-            return
+        quantity = 0
+        if not num_text:
+            self._set_field_error(self.stock_num, '请输入数量')
+            has_error = True
+        else:
+            try:
+                quantity = abs(int(num_text))
+                if quantity <= 0:
+                    raise ValueError
+            except ValueError:
+                self._set_field_error(self.stock_num, '数量必须为正整数')
+                has_error = True
 
         # 借出时校验借用人信息
         if direction == -1:
             anchor = self.stock_anchor.text().strip()
             contact = self.stock_contact.text().strip()
             if not anchor and not contact:
-                QMessageBox.warning(self, '提示', '借出操作请至少填写主播艺名或联系方式')
-                return
-            if contact and not all(c.isdigit() or c in '+-() ' for c in contact):
-                QMessageBox.warning(self, '提示', '联系方式格式不正确，请输入有效的电话号码')
-                return
+                self._set_field_error(self.stock_anchor, '借出请至少填写艺名或联系方式')
+                self._set_field_error(self.stock_contact, '借出请至少填写艺名或联系方式')
+                has_error = True
+            elif contact and not all(c.isdigit() or c in '+-() ' for c in contact):
+                self._set_field_error(self.stock_contact, '联系方式格式不正确')
+                has_error = True
+
+        if has_error:
+            return
 
         # 按编号+尺码查找商品
         size_data = self.stock_size.currentData()
@@ -1901,7 +2284,43 @@ class MainWindow(QMainWindow):
     # ---------- 出入库记录查询 ----------
     def load_stock_records(self):
         data = self.db.get_all_stock_records()
-        self._fill_stock_table(data)
+        self._stock_data = data
+        self._stock_page = 1
+        self._render_stock_page()
+
+    def _stock_total_pages(self):
+        total = len(self._stock_data)
+        return max(1, (total + self._stock_page_size - 1) // self._stock_page_size)
+
+    def _stock_go_page(self, page):
+        page = max(1, min(page, self._stock_total_pages()))
+        if page == self._stock_page:
+            return
+        self._stock_page = page
+        self._render_stock_page()
+
+    def _stock_page_size_changed(self, text):
+        try:
+            self._stock_page_size = int(text)
+        except ValueError:
+            return
+        self._stock_page = 1
+        self._render_stock_page()
+
+    def _render_stock_page(self):
+        total = len(self._stock_data)
+        pages = self._stock_total_pages()
+        self._stock_page = max(1, min(self._stock_page, pages))
+        start = (self._stock_page - 1) * self._stock_page_size
+        end = start + self._stock_page_size
+        page_data = self._stock_data[start:end]
+        self._fill_stock_table(page_data)
+        self.st_page_label.setText(f'共 {total} 条')
+        self.st_page_info.setText(f'{self._stock_page} / {pages}')
+        self.st_first_btn.setEnabled(self._stock_page > 1)
+        self.st_prev_btn.setEnabled(self._stock_page > 1)
+        self.st_next_btn.setEnabled(self._stock_page < pages)
+        self.st_last_btn.setEnabled(self._stock_page < pages)
 
     def _fill_stock_table(self, data):
         self.stock_table.setSortingEnabled(False)
@@ -1944,7 +2363,9 @@ class MainWindow(QMainWindow):
     def search_stock_records(self, text):
         keyword = text.strip()
         data = self.db.search_stock_records(keyword) if keyword else self.db.get_all_stock_records()
-        self._fill_stock_table(data)
+        self._stock_data = data
+        self._stock_page = 1
+        self._render_stock_page()
 
     def select_stock_record(self, row):
         """点击记录行时，将信息填充到左侧表单（用于归还/赔付/修改操作）"""
@@ -2003,17 +2424,18 @@ class MainWindow(QMainWindow):
         old_clothing_id = record[1]
 
         # 从表单读取新值
+        self._clear_all_field_errors()
         num_text = self.stock_num.text().strip()
         if not num_text:
-            QMessageBox.warning(self, '提示', '请输入数量')
+            self._set_field_error(self.stock_num, '请输入数量')
             return
         try:
             new_qty = abs(int(num_text))
         except ValueError:
-            QMessageBox.warning(self, '提示', '数量必须为正整数')
+            self._set_field_error(self.stock_num, '数量必须为正整数')
             return
         if new_qty <= 0:
-            QMessageBox.warning(self, '提示', '数量必须大于 0')
+            self._set_field_error(self.stock_num, '数量必须大于 0')
             return
 
         new_dept = self.stock_department.text().strip()
@@ -2164,6 +2586,7 @@ class MainWindow(QMainWindow):
         self.stock_date.setDate(QDate.currentDate())
         self._clear_stock_image()
         self._selected_record_id = None
+        self._clear_all_field_errors()
 
     # ---------- 使用手册 ----------
     def _show_help_manual(self):
@@ -2318,6 +2741,227 @@ class MainWindow(QMainWindow):
     </div>
     </div>
     '''
+
+    # ---------- Excel 导出 ----------
+    def _export_clothing_excel(self):
+        """导出商品数据到 Excel（勾选行 / 全部）"""
+        try:
+            import openpyxl
+            from openpyxl.styles import Font, Alignment
+        except ImportError:
+            QMessageBox.warning(self, '缺少依赖', '请先安装 openpyxl：\npip install openpyxl')
+            return
+
+        checked = self._get_checked_ids()
+        if checked:
+            rows_to_export = [r for r, _ in checked]
+            default_name = f'商品数据_选中{len(checked)}条.xlsx'
+        else:
+            rows_to_export = list(range(self.clothing_table.rowCount()))
+            default_name = '商品数据_全部.xlsx'
+
+        if not rows_to_export:
+            QMessageBox.warning(self, '提示', '没有可导出的数据')
+            return
+
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, '导出商品数据', default_name, 'Excel 文件 (*.xlsx);;所有文件 (*)')
+        if not file_path:
+            return
+
+        try:
+            wb = openpyxl.Workbook()
+            ws = wb.active
+            ws.title = '商品数据'
+            headers = self.COLUMNS[1:]  # 跳过复选框列
+            for c, h in enumerate(headers, 1):
+                cell = ws.cell(row=1, column=c, value=h)
+                cell.font = Font(bold=True)
+                cell.alignment = Alignment(horizontal='center')
+            for ri, row in enumerate(rows_to_export, 2):
+                for ci, col in enumerate(range(1, self.clothing_table.columnCount()), 1):
+                    item = self.clothing_table.item(row, col)
+                    ws.cell(row=ri, column=ci, value=item.text() if item else '')
+            for c in range(1, len(headers) + 1):
+                ws.column_dimensions[openpyxl.utils.get_column_letter(c)].width = 14
+            wb.save(file_path)
+            wb.close()
+            QMessageBox.information(self, '成功', f'已导出 {len(rows_to_export)} 条商品数据\n{file_path}')
+        except Exception as e:
+            QMessageBox.critical(self, '导出失败', f'保存时出错：\n{e}')
+
+    def _export_stock_excel(self):
+        """导出出入库记录到 Excel"""
+        try:
+            import openpyxl
+            from openpyxl.styles import Font, Alignment
+        except ImportError:
+            QMessageBox.warning(self, '缺少依赖', '请先安装 openpyxl：\npip install openpyxl')
+            return
+
+        row_count = self.stock_table.rowCount()
+        if row_count == 0:
+            QMessageBox.warning(self, '提示', '没有可导出的数据')
+            return
+
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, '导出出入库记录', '出入库记录.xlsx', 'Excel 文件 (*.xlsx);;所有文件 (*)')
+        if not file_path:
+            return
+
+        try:
+            wb = openpyxl.Workbook()
+            ws = wb.active
+            ws.title = '出入库记录'
+            headers = list(self.STOCK_RECORD_COLS)
+            headers[-1] = '图片路径'  # 图片列导出路径文字
+            for c, h in enumerate(headers, 1):
+                cell = ws.cell(row=1, column=c, value=h)
+                cell.font = Font(bold=True)
+                cell.alignment = Alignment(horizontal='center')
+            for ri in range(row_count):
+                for ci in range(len(headers)):
+                    item = self.stock_table.item(ri, ci)
+                    ws.cell(row=ri + 2, column=ci + 1, value=item.text() if item else '')
+            for c in range(1, len(headers) + 1):
+                ws.column_dimensions[openpyxl.utils.get_column_letter(c)].width = 14
+            wb.save(file_path)
+            wb.close()
+            QMessageBox.information(self, '成功', f'已导出 {row_count} 条记录\n{file_path}')
+        except Exception as e:
+            QMessageBox.critical(self, '导出失败', f'保存时出错：\n{e}')
+
+    # ---------- 系统设置标签 ----------
+    def _create_settings_tab(self):
+        widget = QWidget()
+        outer = QVBoxLayout(widget)
+        outer.setContentsMargins(40, 30, 40, 30)
+        outer.setSpacing(24)
+
+        title = QLabel('🛠  系统设置')
+        title.setStyleSheet('font-size: 18px; font-weight: bold; color: #6b5b4e;')
+        outer.addWidget(title)
+
+        # ── 数据备份与恢复 ──
+        group = QWidget()
+        group.setObjectName('settingsCard')
+        group.setStyleSheet(
+            '#settingsCard { background: #fff; border: 1px solid #e0d5ca; '
+            'border-radius: 10px; padding: 20px; color: #555; }')
+        g_layout = QVBoxLayout(group)
+        g_layout.setSpacing(14)
+
+        g_title = QLabel('💾  数据备份与恢复')
+        g_title.setStyleSheet('font-size: 14px; font-weight: bold; color: #6b5b4e;')
+        g_layout.addWidget(g_title)
+
+        desc = QLabel(
+            '手动备份会将当前数据库复制到您选择的位置。\n'
+            '恢复操作会用选定的备份文件替换当前数据库，请谨慎操作。')
+        desc.setStyleSheet('color: #888; font-size: 12px;')
+        desc.setWordWrap(True)
+        g_layout.addWidget(desc)
+
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(14)
+        backup_btn = QPushButton('📦  手动备份')
+        backup_btn.setObjectName('secondaryBtn')
+        backup_btn.setFixedHeight(36)
+        backup_btn.clicked.connect(self._manual_backup)
+        restore_btn = QPushButton('📂  恢复数据')
+        restore_btn.setObjectName('secondaryBtn')
+        restore_btn.setFixedHeight(36)
+        restore_btn.clicked.connect(self._restore_backup)
+        btn_row.addWidget(backup_btn)
+        btn_row.addWidget(restore_btn)
+        btn_row.addStretch()
+        g_layout.addLayout(btn_row)
+
+        self._backup_status = QLabel('')
+        self._backup_status.setStyleSheet('color: #888; font-size: 11px;')
+        g_layout.addWidget(self._backup_status)
+
+        outer.addWidget(group)
+
+        # ── 自动备份信息 ──
+        auto_group = QWidget()
+        auto_group.setObjectName('settingsCard2')
+        auto_group.setStyleSheet(
+            '#settingsCard2 { background: #fff; border: 1px solid #e0d5ca; '
+            'border-radius: 10px; padding: 20px; color: #555; }')
+        ag_layout = QVBoxLayout(auto_group)
+        ag_layout.setSpacing(10)
+        ag_title = QLabel('🔄  自动备份')
+        ag_title.setStyleSheet('font-size: 14px; font-weight: bold; color: #6b5b4e;')
+        ag_layout.addWidget(ag_title)
+        auto_desc = QLabel(
+            '系统每 30 分钟自动备份一次数据库到 backups/ 目录，保留最近 10 个备份。\n'
+            '启动时也会自动执行一次备份。')
+        auto_desc.setStyleSheet('color: #888; font-size: 12px;')
+        auto_desc.setWordWrap(True)
+        ag_layout.addWidget(auto_desc)
+        outer.addWidget(auto_group)
+
+        outer.addStretch()
+        return widget
+
+    def _manual_backup(self):
+        """手动备份：复制 db 文件到用户选择的位置"""
+        db_path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), 'clothing_db.db')
+        if not os.path.isfile(db_path):
+            QMessageBox.warning(self, '提示', '未找到数据库文件')
+            return
+        ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+        default_name = f'clothing_db_backup_{ts}.db'
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, '选择备份保存位置', default_name,
+            '数据库文件 (*.db);;所有文件 (*)')
+        if not file_path:
+            return
+        try:
+            shutil.copy2(db_path, file_path)
+            self._backup_status.setText(f'✅ 备份成功：{file_path}')
+            self._backup_status.setStyleSheet('color: #2e7d32; font-size: 11px;')
+        except Exception as e:
+            QMessageBox.critical(self, '备份失败', f'备份出错：\n{e}')
+
+    def _restore_backup(self):
+        """恢复数据：用选定的 db 文件替换当前数据库"""
+        reply = QMessageBox.warning(
+            self, '确认恢复',
+            '恢复操作会覆盖当前所有数据，建议先手动备份！\n\n确定要继续吗？',
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if reply != QMessageBox.Yes:
+            return
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, '选择备份文件', '',
+            '数据库文件 (*.db);;所有文件 (*)')
+        if not file_path:
+            return
+        db_path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), 'clothing_db.db')
+        try:
+            # 先关闭当前连接
+            self.db.conn.close()
+            shutil.copy2(file_path, db_path)
+            # 重新打开连接
+            self.db.conn = sqlite3.connect(db_path)
+            self.db.cursor = self.db.conn.cursor()
+            self.load_clothing()
+            self.load_stock_records()
+            self._update_stats()
+            self._backup_status.setText(f'✅ 数据已恢复：{os.path.basename(file_path)}')
+            self._backup_status.setStyleSheet('color: #2e7d32; font-size: 11px;')
+            QMessageBox.information(self, '成功', '数据库已恢复，数据已刷新！')
+        except Exception as e:
+            # 尝试重新连接
+            try:
+                self.db.conn = sqlite3.connect(db_path)
+                self.db.cursor = self.db.conn.cursor()
+            except Exception:
+                pass
+            QMessageBox.critical(self, '恢复失败', f'恢复出错：\n{e}')
 
     # ---------- 数据自动备份 ----------
     def _setup_auto_backup(self):
