@@ -3,7 +3,7 @@ import sqlite3
 import os
 import shutil
 import uuid
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from PyQt5.QtWidgets import *
 from PyQt5.QtCore import Qt, QSize, QDate, QTimer
 from PyQt5.QtGui import QFont, QIcon, QColor, QPalette, QPixmap, QIntValidator, QDoubleValidator
@@ -618,7 +618,7 @@ class Database:
         # 默认管理员（试用账号，30天有效）
         self.cursor.execute("SELECT * FROM users WHERE username='admin'")
         if not self.cursor.fetchone():
-            exp = (datetime.now() + __import__('datetime').timedelta(days=30)).strftime('%Y-%m-%d')
+            exp = (datetime.now() + timedelta(days=30)).strftime('%Y-%m-%d')
             self.cursor.execute(
                 "INSERT INTO users (username,password,expires_at) VALUES (?,?,?)",
                 ("admin", "123456", exp))
@@ -1724,6 +1724,8 @@ class MainWindow(QMainWindow):
                 if actual_col == 11:
                     cell = SortableTableItem('📷' if value else '')
                     cell.setTextAlignment(Qt.AlignCenter)
+                    if is_low:
+                        cell.setBackground(low_stock_bg)
                     self.clothing_table.setItem(row, actual_col, cell)
                     continue
                 cell = SortableTableItem(str(value))
@@ -1758,39 +1760,45 @@ class MainWindow(QMainWindow):
             self._update_batch_count()
             return
         table = self.clothing_table
-        self.c_id.setText(table.item(row, 1).text())
-        self.c_code.setText(table.item(row, 2).text())
-        self.c_name.setText(table.item(row, 3).text())
+        def _txt(c):
+            item = table.item(row, c)
+            return item.text() if item else ''
+        self.c_id.setText(_txt(1))
+        self.c_code.setText(_txt(2))
+        self.c_name.setText(_txt(3))
         # 设置下拉框（支持自定义值）
-        cat = table.item(row, 4).text()
+        cat = _txt(4)
         idx = self.c_category.findText(cat)
         if idx >= 0:
             self.c_category.setCurrentIndex(idx)
         else:
             self.c_category.setCurrentText(cat)
-        self.c_brand.setText(table.item(row, 5).text())
-        sz = table.item(row, 6).text()
+        self.c_brand.setText(_txt(5))
+        sz = _txt(6)
         idx = self.c_size.findText(sz)
         if idx >= 0:
             self.c_size.setCurrentIndex(idx)
         else:
             self.c_size.setCurrentText(sz)
-        self.c_color.setText(table.item(row, 7).text())
-        se = table.item(row, 8).text()
+        self.c_color.setText(_txt(7))
+        se = _txt(8)
         idx = self.c_season.findText(se)
         if idx >= 0:
             self.c_season.setCurrentIndex(idx)
         else:
             self.c_season.setCurrentText(se)
-        self.c_stock.setText(table.item(row, 9).text())
-        self.c_cost.setText(table.item(row, 10).text())
+        self.c_stock.setText(_txt(9))
+        self.c_cost.setText(_txt(10))
         # 图片预览
-        clothing_id = int(table.item(row, 1).text())
-        self.db.cursor.execute("SELECT image_path FROM clothing WHERE id=?", (clothing_id,))
-        result = self.db.cursor.fetchone()
-        if result and result[0]:
-            self._clothing_image_path = result[0]
-            self._show_clothing_preview(result[0])
+        cid = _txt(1)
+        if cid:
+            self.db.cursor.execute("SELECT image_path FROM clothing WHERE id=?", (int(cid),))
+            result = self.db.cursor.fetchone()
+            if result and result[0]:
+                self._clothing_image_path = result[0]
+                self._show_clothing_preview(result[0])
+            else:
+                self._clear_clothing_image()
         else:
             self._clear_clothing_image()
 
@@ -1918,7 +1926,7 @@ class MainWindow(QMainWindow):
         if not ok:
             return
         # 图片处理
-        img_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'clothing_images')
+        img_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'clothing_images') + os.sep
         if self._clothing_image_path and not self._clothing_image_path.startswith(img_dir):
             saved_img = self._save_clothing_image(self._clothing_image_path)
         else:
