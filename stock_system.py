@@ -530,10 +530,201 @@ QProgressBar::chunk {
 }
 """
 
+APP_DATA_DIR_NAME = 'NiclothStockSystem'
+DATABASE_FILENAME = 'clothing_db.db'
+
+
+def get_runtime_dir():
+    if getattr(sys, 'frozen', False):
+        return os.path.dirname(os.path.abspath(sys.executable))
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+def get_app_data_dir():
+    if sys.platform == 'darwin':
+        base_dir = os.path.join(os.path.expanduser('~'), 'Library', 'Application Support')
+    elif os.name == 'nt':
+        base_dir = os.environ.get('APPDATA') or os.path.join(
+            os.path.expanduser('~'), 'AppData', 'Roaming')
+    else:
+        base_dir = os.environ.get('XDG_DATA_HOME') or os.path.join(
+            os.path.expanduser('~'), '.local', 'share')
+    data_dir = os.path.join(base_dir, APP_DATA_DIR_NAME)
+    os.makedirs(data_dir, exist_ok=True)
+    return data_dir
+
+
+APP_DATA_DIR = get_app_data_dir()
+DB_PATH = os.path.join(APP_DATA_DIR, DATABASE_FILENAME)
+
+
+def get_storage_dir(folder_name):
+    path = os.path.join(APP_DATA_DIR, folder_name)
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def _append_candidate_dir(candidates, candidate):
+    if not candidate:
+        return
+    abs_candidate = os.path.abspath(os.path.expanduser(candidate))
+    if abs_candidate not in candidates:
+        candidates.append(abs_candidate)
+
+
+def _expand_legacy_root_candidates(candidate):
+    expanded = []
+    _append_candidate_dir(expanded, candidate)
+    if not expanded:
+        return expanded
+
+    abs_candidate = expanded[0]
+    parent = abs_candidate
+    for _ in range(4):
+        next_parent = os.path.dirname(parent)
+        if not next_parent or next_parent == parent:
+            break
+        _append_candidate_dir(expanded, next_parent)
+        parent = next_parent
+
+    if abs_candidate.endswith('.app'):
+        _append_candidate_dir(expanded, os.path.join(abs_candidate, 'Contents'))
+        _append_candidate_dir(expanded, os.path.join(abs_candidate, 'Contents', 'MacOS'))
+        _append_candidate_dir(expanded, os.path.join(abs_candidate, 'Contents', 'Resources'))
+        _append_candidate_dir(expanded, os.path.dirname(abs_candidate))
+
+    if os.path.basename(abs_candidate) in ('MacOS', 'Resources'):
+        contents_dir = os.path.dirname(abs_candidate)
+        if os.path.basename(contents_dir) == 'Contents':
+            _append_candidate_dir(expanded, contents_dir)
+            _append_candidate_dir(expanded, os.path.join(contents_dir, 'MacOS'))
+            _append_candidate_dir(expanded, os.path.join(contents_dir, 'Resources'))
+            app_dir = os.path.dirname(contents_dir)
+            if app_dir.endswith('.app'):
+                _append_candidate_dir(expanded, app_dir)
+                _append_candidate_dir(expanded, os.path.dirname(app_dir))
+
+    return expanded
+
+
+def iter_legacy_storage_roots():
+    roots = []
+    raw_candidates = [
+        get_runtime_dir(),
+        os.getcwd(),
+        os.path.dirname(os.path.abspath(__file__))
+    ]
+
+    if getattr(sys, '_MEIPASS', None):
+        raw_candidates.append(sys._MEIPASS)
+    if sys.argv and sys.argv[0]:
+        raw_candidates.append(os.path.dirname(os.path.abspath(sys.argv[0])))
+
+    for candidate in raw_candidates:
+        for expanded_candidate in _expand_legacy_root_candidates(candidate):
+            if expanded_candidate == os.path.abspath(APP_DATA_DIR):
+                continue
+            if expanded_candidate not in roots:
+                roots.append(expanded_candidate)
+    return roots
+
+
+def is_path_in_dir(file_path, dir_path):
+    if not file_path:
+        return False
+    try:
+        normalized_file = os.path.normcase(os.path.abspath(file_path))
+        normalized_dir = os.path.normcase(os.path.abspath(dir_path))
+        return os.path.commonpath([normalized_file, normalized_dir]) == normalized_dir
+    except ValueError:
+        return False
+
+
+def migrate_legacy_storage():
+    db_candidates = []
+    for root in iter_legacy_storage_roots():
+        candidate = os.path.join(root, DATABASE_FILENAME)
+        if os.path.isfile(candidate):
+            db_candidates.append(candidate)
+
+    if not os.path.isfile(DB_PATH) and db_candidates:
+        shutil.copy2(max(db_candidates, key=os.path.getmtime), DB_PATH)
+
+    for folder_name in ('clothing_images', 'stock_images', 'backups'):
+        dest_dir = get_storage_dir(folder_name)
+        for root in iter_legacy_storage_roots():
+            src_dir = os.path.join(root, folder_name)
+            if not os.path.isdir(src_dir):
+                continue
+            for entry_name in os.listdir(src_dir):
+                src_path = os.path.join(src_dir, entry_name)
+                dest_path = os.path.join(dest_dir, entry_name)
+                if os.path.isfile(src_path) and not os.path.exists(dest_path):
+                    shutil.copy2(src_path, dest_path)
+
+
+def resolve_stored_file_path(path, preferred_folder=''):
+    if not path:
+        return ''
+
+    normalized_input_path = os.path.expanduser(str(path)).replace('\\', '/')
+    expanded_path = os.path.abspath(normalized_input_path)
+    if os.path.isfile(expanded_path):
+        return expanded_path
+
+    filename = os.path.basename(normalized_input_path)
+    if not filename:
+        return ''
+
+    candidate_dirs = []
+    if preferred_folder:
+        candidate_dirs.append(get_storage_dir(preferred_folder))
+    else:
+        candidate_dirs.extend([
+            get_storage_dir('clothing_images'),
+            get_storage_dir('stock_images')
+        ])
+
+    for root in iter_legacy_storage_roots():
+        if preferred_folder:
+            candidate_dirs.append(os.path.join(root, preferred_folder))
+        else:
+            candidate_dirs.extend([
+                os.path.join(root, 'clothing_images'),
+                os.path.join(root, 'stock_images')
+            ])
+
+    seen_dirs = set()
+    for candidate_dir in candidate_dirs:
+        abs_dir = os.path.abspath(candidate_dir)
+        if abs_dir in seen_dirs:
+            continue
+        seen_dirs.add(abs_dir)
+        candidate_path = os.path.join(abs_dir, filename)
+        if os.path.isfile(candidate_path):
+            return candidate_path
+    return ''
+
+
+def copy_image_to_storage(src_path, folder_name):
+    resolved_path = resolve_stored_file_path(src_path, folder_name)
+    if not resolved_path:
+        return ''
+
+    dest_dir = get_storage_dir(folder_name)
+    if is_path_in_dir(resolved_path, dest_dir):
+        return resolved_path
+
+    ext = os.path.splitext(resolved_path)[1]
+    dest_path = os.path.join(dest_dir, f"{uuid.uuid4().hex}{ext}")
+    shutil.copy2(resolved_path, dest_path)
+    return dest_path
+
 # ===================== 数据库操作类 =====================
 class Database:
     def __init__(self):
-        self.conn = sqlite3.connect('clothing_db.db')
+        migrate_legacy_storage()
+        self.conn = sqlite3.connect(DB_PATH)
         self.cursor = self.conn.cursor()
         self.create_tables()
 
@@ -1826,8 +2017,9 @@ class MainWindow(QMainWindow):
         self.c_img_preview.setText('暂无图片')
 
     def _show_clothing_preview(self, path):
-        if path and os.path.isfile(path):
-            pixmap = QPixmap(path)
+        resolved_path = resolve_stored_file_path(path, 'clothing_images')
+        if resolved_path and os.path.isfile(resolved_path):
+            pixmap = QPixmap(resolved_path)
             if not pixmap.isNull():
                 scaled = pixmap.scaled(
                     self.c_img_preview.size(),
@@ -1839,7 +2031,7 @@ class MainWindow(QMainWindow):
         self.c_img_preview.setText('暂无图片')
 
     def _preview_clothing_image(self, event=None):
-        path = self._clothing_image_path
+        path = resolve_stored_file_path(self._clothing_image_path, 'clothing_images')
         if not path or not os.path.isfile(path):
             return
         dlg = QDialog(self)
@@ -1857,15 +2049,7 @@ class MainWindow(QMainWindow):
 
     def _save_clothing_image(self, src_path):
         """复制图片到 clothing_images 目录，返回保存路径"""
-        if not src_path or not os.path.isfile(src_path):
-            return ''
-        dest_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'clothing_images')
-        os.makedirs(dest_dir, exist_ok=True)
-        ext = os.path.splitext(src_path)[1]
-        filename = f"{uuid.uuid4().hex}{ext}"
-        dest = os.path.join(dest_dir, filename)
-        shutil.copy2(src_path, dest)
-        return dest
+        return copy_image_to_storage(src_path, 'clothing_images')
 
     def _validate_clothing_form(self):
         """校验商品表单字段，返回 (ok, stock_val, cost_val)"""
@@ -1925,12 +2109,7 @@ class MainWindow(QMainWindow):
         ok, stock_val, cost_val = self._validate_clothing_form()
         if not ok:
             return
-        # 图片处理
-        img_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'clothing_images') + os.sep
-        if self._clothing_image_path and not self._clothing_image_path.startswith(img_dir):
-            saved_img = self._save_clothing_image(self._clothing_image_path)
-        else:
-            saved_img = self._clothing_image_path
+        saved_img = self._save_clothing_image(self._clothing_image_path)
         self.db.update_clothing(
             int(self.c_id.text()),
             self.c_code.text().strip(),
@@ -2523,7 +2702,9 @@ class MainWindow(QMainWindow):
         if record_id_item:
             record = self.db.get_record_by_id(int(record_id_item.text()))
             if record and record[15]:
-                self._show_image_preview(record[15])
+                resolved_path = resolve_stored_file_path(record[15], 'stock_images')
+                self._stock_image_path = resolved_path or record[15]
+                self._show_image_preview(self._stock_image_path)
             else:
                 self._clear_stock_image()
 
@@ -2570,13 +2751,10 @@ class MainWindow(QMainWindow):
 
         # 图片处理：如果用户选了新图片则保存，否则保持原有
         image_path_arg = None
-        if self._stock_image_path and os.path.isfile(self._stock_image_path):
-            # 用户选了新文件（非已保存路径），则保存
-            if not self._stock_image_path.startswith(
-                    os.path.join(os.path.dirname(os.path.abspath(__file__)), 'stock_images')):
-                image_path_arg = self._save_stock_image(self._stock_image_path)
-            else:
-                image_path_arg = self._stock_image_path
+        if self._stock_image_path:
+            saved_image = self._save_stock_image(self._stock_image_path)
+            if saved_image:
+                image_path_arg = saved_image
 
         changes = []
         if new_qty != old_qty:
@@ -2644,8 +2822,9 @@ class MainWindow(QMainWindow):
         self.stock_img_preview.setText('暂无图片')
 
     def _show_image_preview(self, path):
-        if path and os.path.isfile(path):
-            pixmap = QPixmap(path)
+        resolved_path = resolve_stored_file_path(path, 'stock_images')
+        if resolved_path and os.path.isfile(resolved_path):
+            pixmap = QPixmap(resolved_path)
             if not pixmap.isNull():
                 scaled = pixmap.scaled(
                     self.stock_img_preview.size(),
@@ -2659,7 +2838,7 @@ class MainWindow(QMainWindow):
     def _preview_stock_image(self, event=None):
         """点击预览图放大查看"""
         # 优先从当前预览来源取路径
-        path = self._stock_image_path
+        path = resolve_stored_file_path(self._stock_image_path, 'stock_images')
         if not path:
             # 尝试从选中行获取
             selected = self.stock_table.currentRow()
@@ -2668,7 +2847,7 @@ class MainWindow(QMainWindow):
                 if record_id_item:
                     record = self.db.get_record_by_id(int(record_id_item.text()))
                     if record:
-                        path = record[15]
+                        path = resolve_stored_file_path(record[15], 'stock_images')
         if not path or not os.path.isfile(path):
             return
         dlg = QDialog(self)
@@ -2686,15 +2865,7 @@ class MainWindow(QMainWindow):
 
     def _save_stock_image(self, src_path):
         """复制图片到 stock_images 目录，返回保存路径"""
-        if not src_path or not os.path.isfile(src_path):
-            return ''
-        dest_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'stock_images')
-        os.makedirs(dest_dir, exist_ok=True)
-        ext = os.path.splitext(src_path)[1]
-        filename = f"{uuid.uuid4().hex}{ext}"
-        dest = os.path.join(dest_dir, filename)
-        shutil.copy2(src_path, dest)
-        return dest
+        return copy_image_to_storage(src_path, 'stock_images')
 
     def clear_stock_form(self):
         for w in [self.stock_id, self.stock_department, self.stock_team,
@@ -2830,8 +3001,8 @@ class MainWindow(QMainWindow):
 
     <h2 style="color:#6b5b4e;">六、数据安全与备份</h2>
     <ul>
-    <li>系统每 30 分钟自动备份数据库到 <code style="background:#f5f0eb; padding:2px 6px; border-radius:4px;">backups/</code> 目录，保留最近 10 份</li>
-    <li>数据库文件为 <code style="background:#f5f0eb; padding:2px 6px; border-radius:4px;">clothing_db.db</code>，存放在程序目录内</li>
+    <li>系统每 30 分钟自动备份数据库到用户数据目录下的 <code style="background:#f5f0eb; padding:2px 6px; border-radius:4px;">backups/</code> 目录，保留最近 10 份</li>
+    <li>数据库文件为 <code style="background:#f5f0eb; padding:2px 6px; border-radius:4px;">clothing_db.db</code>，统一存放在用户数据目录内</li>
     <li>建议批量操作前手动备份数据库文件</li>
     <li>请勿随意修改或删除数据库文件</li>
     </ul>
@@ -3015,7 +3186,7 @@ class MainWindow(QMainWindow):
         ag_title.setStyleSheet('font-size: 14px; font-weight: bold; color: #6b5b4e;')
         ag_layout.addWidget(ag_title)
         auto_desc = QLabel(
-            '系统每 30 分钟自动备份一次数据库到 backups/ 目录，保留最近 10 个备份。\n'
+            '系统每 30 分钟自动备份一次数据库到用户数据目录下的 backups/ 目录，保留最近 10 个备份。\n'
             '启动时也会自动执行一次备份。')
         auto_desc.setStyleSheet('color: #888; font-size: 12px;')
         auto_desc.setWordWrap(True)
@@ -3027,9 +3198,7 @@ class MainWindow(QMainWindow):
 
     def _manual_backup(self):
         """手动备份：复制 db 文件到用户选择的位置"""
-        db_path = os.path.join(
-            os.path.dirname(os.path.abspath(__file__)), 'clothing_db.db')
-        if not os.path.isfile(db_path):
+        if not os.path.isfile(DB_PATH):
             QMessageBox.warning(self, '提示', '未找到数据库文件')
             return
         ts = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -3040,7 +3209,7 @@ class MainWindow(QMainWindow):
         if not file_path:
             return
         try:
-            shutil.copy2(db_path, file_path)
+            shutil.copy2(DB_PATH, file_path)
             self._backup_status.setText(f'✅ 备份成功：{file_path}')
             self._backup_status.setStyleSheet('color: #2e7d32; font-size: 11px;')
         except Exception as e:
@@ -3059,14 +3228,12 @@ class MainWindow(QMainWindow):
             '数据库文件 (*.db);;所有文件 (*)')
         if not file_path:
             return
-        db_path = os.path.join(
-            os.path.dirname(os.path.abspath(__file__)), 'clothing_db.db')
         try:
             # 先关闭当前连接
             self.db.conn.close()
-            shutil.copy2(file_path, db_path)
+            shutil.copy2(file_path, DB_PATH)
             # 重新打开连接
-            self.db.conn = sqlite3.connect(db_path)
+            self.db.conn = sqlite3.connect(DB_PATH)
             self.db.cursor = self.db.conn.cursor()
             self.load_clothing()
             self.load_stock_records()
@@ -3077,7 +3244,7 @@ class MainWindow(QMainWindow):
         except Exception as e:
             # 尝试重新连接
             try:
-                self.db.conn = sqlite3.connect(db_path)
+                self.db.conn = sqlite3.connect(DB_PATH)
                 self.db.cursor = self.db.conn.cursor()
             except Exception:
                 pass
@@ -3086,8 +3253,7 @@ class MainWindow(QMainWindow):
     # ---------- 数据自动备份 ----------
     def _setup_auto_backup(self):
         """启动时立即备份一次，然后每30分钟自动备份"""
-        self._backup_dir = os.path.join(
-            os.path.dirname(os.path.abspath(__file__)), 'backups')
+        self._backup_dir = get_storage_dir('backups')
         os.makedirs(self._backup_dir, exist_ok=True)
         self._do_backup()  # 启动时备份
         self._backup_timer = QTimer(self)
@@ -3097,14 +3263,12 @@ class MainWindow(QMainWindow):
     def _do_backup(self):
         """执行数据库备份，保留最近10个备份文件"""
         try:
-            db_path = os.path.join(
-                os.path.dirname(os.path.abspath(__file__)), 'clothing_db.db')
-            if not os.path.isfile(db_path):
+            if not os.path.isfile(DB_PATH):
                 return
             ts = datetime.now().strftime('%Y%m%d_%H%M%S')
             backup_name = f'clothing_db_{ts}.db'
             dest = os.path.join(self._backup_dir, backup_name)
-            shutil.copy2(db_path, dest)
+            shutil.copy2(DB_PATH, dest)
             # 清理旧备份，只保留最近10个
             backups = sorted(
                 [f for f in os.listdir(self._backup_dir)
