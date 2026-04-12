@@ -667,12 +667,14 @@ def resolve_stored_file_path(path, preferred_folder=''):
     if not path:
         return ''
 
-    normalized_input_path = os.path.expanduser(str(path)).replace('\\', '/')
-    expanded_path = os.path.abspath(normalized_input_path)
-    if os.path.isfile(expanded_path):
-        return expanded_path
+    path_str = os.path.expanduser(str(path))
 
-    filename = os.path.basename(normalized_input_path)
+    # If it's already an absolute path that exists, use it directly
+    if os.path.isabs(path_str) and os.path.isfile(path_str):
+        return path_str
+
+    # Extract filename (handles both / and \ separators)
+    filename = os.path.basename(path_str)
     if not filename:
         return ''
 
@@ -713,12 +715,14 @@ def copy_image_to_storage(src_path, folder_name):
 
     dest_dir = get_storage_dir(folder_name)
     if is_path_in_dir(resolved_path, dest_dir):
-        return resolved_path
+        # Already in target dir, return filename only for portability
+        return os.path.basename(resolved_path)
 
     ext = os.path.splitext(resolved_path)[1]
-    dest_path = os.path.join(dest_dir, f"{uuid.uuid4().hex}{ext}")
+    filename = f"{uuid.uuid4().hex}{ext}"
+    dest_path = os.path.join(dest_dir, filename)
     shutil.copy2(resolved_path, dest_path)
-    return dest_path
+    return filename
 
 # ===================== 数据库操作类 =====================
 class Database:
